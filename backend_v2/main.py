@@ -603,13 +603,14 @@ def public_kb_chat(token: str, data: dict, request: Request = None):
         cfg = _load_prompt_config()
         sys_prompt = cfg.get("system_prompt", "你是知识库问答专家。严格基于文档回答，不编造。使用中文。")
 
+        history_text = "\n".join([f"用户: {h['q']}\n助手: {h['a']}" for h in history[-6:]])
         prompt = f"""{sys_prompt}
 
 【参考资料】
 {context}
 
 【历史对话】
-{chr(10).join([f"用户: {h['q']}\n助手: {h['a']}" for h in history[-6:]])}
+{history_text}
 
 【当前问题】
 {question}
