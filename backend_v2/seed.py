@@ -1,6 +1,5 @@
 """Seed reference data and default users for Motor PM v2."""
-import asyncio
-from backend_v2.database import AsyncSessionLocal, engine, Base, init_db
+from backend_v2.database import SessionLocal, init_db
 from backend_v2.models import Phase, Gate, TechnicalLine, Role, UserAuth
 from backend_v2.auth import hash_password
 from sqlalchemy import select
@@ -9,7 +8,7 @@ from sqlalchemy import select
 def seed():
     init_db()
 
-    with AsyncSessionLocal() as db:
+    with SessionLocal() as db:
         # ── Phases ──
         phases = [
             ("概念阶段", "CONCEPT", 1, "需求分析、技术方案概念设计，门径G1"),
@@ -88,8 +87,6 @@ def seed():
         db.commit()
         print("Seed data loaded successfully.")
 
-    await engine.dispose()
-
 
 if __name__ == "__main__":
-    asyncio.run(seed())
+    seed()
