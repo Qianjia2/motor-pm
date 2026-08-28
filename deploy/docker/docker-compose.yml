@@ -1,0 +1,39 @@
+# MotorPM v2.0 - docker-compose 编排
+#
+# 部署方式(群晖 Container Manager):
+#   1. 把本部署包解压到 NAS 共享文件夹(例如 /volume1/docker/motorpm)
+#   2. 在 Container Manager → 项目 → 新增,路径指向该目录,直接构建并启动
+#
+# 数据持久化:
+#   ./data    → 数据库 + 全部业务配置(JSON),必须持久化
+#   ./uploads → 上传文件主存储,必须持久化
+# 这两个目录在 NAS 文件系统上,天然可被群晖快照/备份覆盖。
+
+services:
+  motorpm:
+    build: .
+    image: motorpm:2.0
+    container_name: motorpm
+    restart: unless-stopped
+    ports:
+      # 宿主机端口:容器端口。如需改端口,改左侧数字即可(如 8080:5002)
+      - "5002:5002"
+    volumes:
+      - ./data:/app/data
+      - ./uploads:/app/uploads
+    environment:
+      # 覆盖 config.py 里的 NAS UNC 路径 → 容器内本地上传目录
+      UPLOAD_DIR: /app/uploads
+      # 生产环境务必换成随机密钥(执行: openssl rand -hex 32)
+      SECRET_KEY: change-me-please-64-char-random-string-0123456789abcdef
+      TZ: Asia/Shanghai
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5002/api/health', timeout=5)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"

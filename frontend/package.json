@@ -1,0 +1,26 @@
+{
+  "name": "motor-pm-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "rm -rf ../backend_v2/static/assets/*.js && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "^2.3",
+    "axios": "^1.7",
+    "docx-preview": "^0.4.0",
+    "element-plus": "^2.8",
+    "pinia": "^2.1",
+    "pptx-preview": "^1.0.7",
+    "vue": "^3.4",
+    "vue-router": "^4.3",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.1",
+    "vite": "^5.4"
+  }
+}

@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Node
+node_modules/
+
+# Build artifacts (CI 会重新构建; main.py 实际服务 frontend/dist)
+frontend/dist/
+backend_v2/static/
+static/
+
+# Docker 部署包(打包产物 + 过期源码快照 + 现场数据; 部署包走单独打包流程)
+deploy/docker/data/
+deploy/docker/src/
+deploy/*.zip
+
+# 剪贴板同步的运行时映射
+clipboard_project_map.json
+
+# 临时调试文件
+temp/
+
+# Runtime data (DB / 上传 / 模板库 / 日志)
+data/*
+!data/bom_internal_template.xls
+*.db
+*.log
+e2e/output/
+uploads/
+
+# Secrets
+.env
+
+# Office 临时文件 / 快捷方式
+~$*
+*.lnk

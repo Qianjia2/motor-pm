@@ -1,0 +1,37 @@
+@echo off
+chcp 65001 >nul
+title 电机项目管理工具 v2.0
+
+echo ========================================
+echo   电机项目管理工具 v2.0 - 启动中...
+echo ========================================
+echo.
+
+REM 关闭已有进程
+taskkill /F /IM python.exe >nul 2>&1
+taskkill /F /IM ngrok.exe >nul 2>&1
+timeout /t 3 /nobreak >nul
+
+REM 启动 v2 FastAPI 后端 (端口 5003)
+echo [1/2] 启动 v2 FastAPI 后端...
+start "MotorPM-v2" /MIN cmd /c "cd /d D:\AI\motor-pm && python run_v2.py"
+
+timeout /t 5 /nobreak >nul
+
+REM 启动 ngrok 隧道 (映射 5003)
+echo [2/2] 启动外网隧道...
+start "MotorPM-ngrok" /MIN cmd /c "D:\AI\ngrok.exe http 5003 --log=stdout"
+
+timeout /t 5 /nobreak >nul
+
+echo.
+echo ========================================
+echo   启动完成！
+echo.
+echo   内网访问: http://10.136.101.192:5003
+echo   外网访问: 查看 ngrok 窗口中的 Forwarding 地址
+echo.
+echo   每次关机后需重新双击运行本脚本
+echo ========================================
+echo.
+pause

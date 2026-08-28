@@ -1,0 +1,1537 @@
+<template>
+<div class="fs-page">
+  <!-- Left Sidebar -->
+  <aside class="fs-sidebar">
+    <div class="fs-sidebar-header">
+      <div class="fs-space-selector">
+        <select v-if="kbMode==='shared'" v-model="curSpace" @change="loadDocs" class="fs-space-select">
+          <option v-for="s in spaces" :key="s.id" :value="s.id">{{ s.name }}</option>
+        </select>
+        <span v-else class="fs-space-name">个人知识库</span>
+      </div>
+      <div class="fs-mode-tabs">
+        <button :class="{on:kbMode==='shared'}" @click="kbMode='shared';loadDocs()">共享</button>
+        <button :class="{on:kbMode==='personal'}" @click="kbMode='personal';loadDocs()">个人</button>
+        <button :class="{on:kbMode==='shared_with_me'}" @click="kbMode='shared_with_me';loadDocs()">分享给我</button>
+      </div>
+    </div>
+
+    <div class="fs-sidebar-actions">
+      <button class="fs-btn-new" @click="openImport">
+        <span class="fs-btn-new-icon">+</span> 导入
+      </button>
+    </div>
+
+    <div class="fs-folder-section">
+      <div class="fs-folder-title" @click="folderSectionOpen=!folderSectionOpen">
+        <span class="fs-folder-arrow" :style="{transform:folderSectionOpen?'rotate(90deg)':''}">&#8250;</span>
+        文件夹
+        <button class="fs-folder-add" @click.stop="showFolderDlg=true;newFolder='';newFolderSpace=curSpace" title="新建文件夹">+</button>
+        <button class="fs-folder-add" @click.stop="openImportSettings" title="导入设置" style="margin-left:2px">&#9881;</button>
+      </div>
+      <div v-if="folderSectionOpen" class="fs-folder-list">
+        <div :class="['fs-folder-item',{active:!filterFolder}]" @click="filterFolder='';loadDocs()" :title="'全部文档'">
+          <span class="fs-folder-icon">&#128193;</span><span class="fs-fname">全部文档</span>
+          <span class="fs-folder-badge">{{ docs.length }}</span>
+        </div>
+        <template v-for="f in flatFolderList" :key="f.path">
+          <div :class="['fs-folder-item',{active:filterFolder===f.path}]" :style="{paddingLeft:(f.depth*14+8)+'px'}" :title="f.path"
+            @click="pickFolder(f)" @contextmenu.prevent="openCtxMenu($event,f)">
+            <span class="fs-folder-arrow-sm" @click.stop="toggleFolderOpen(f)" v-if="f.children?.length">{{ f.open?'v':'>' }}</span>
+            <span class="fs-folder-icon" v-else>&#128193;</span>
+            <span class="fs-fname">{{ f.name }}</span>
+            <span class="fs-folder-badge" v-if="f.count">{{ f.count }}</span>
+            <span class="fs-folder-actions">
+              <button class="fs-folder-act-btn" @click.stop="startRenameFolder(f)" title="重命名">&#9998;</button>
+              <button class="fs-folder-act-btn" @click.stop="startMoveFolder(f)" title="移动">&#8690;</button>
+              <button class="fs-folder-act-btn" @click.stop="startMoveFolderSpace(f)" title="转移空间">&#8646;</button>
+              <button class="fs-folder-act-btn fs-folder-del-btn" @click.stop="deleteFolder(f)" title="删除">&#128465;</button>
+            </span>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <div class="fs-sidebar-footer" v-if="kbMode==='shared'">
+      <button class="fs-link-text" @click="openSpaceDlg()">管理空间</button>
+    </div>
+
+  </aside>
+
+  <!-- Folder Move to Space Dialog -->
+  <Teleport to="body">
+  <div v-if="showFolderSpaceDlg" class="fs-overlay" @click.self="showFolderSpaceDlg=false">
+    <div class="fs-dialog" style="width:400px">
+      <div class="fs-dialog-header">
+        <div class="fs-dialog-title">转移文件夹: {{ folderSpaceSrc?.name }}</div>
+        <button class="fs-dialog-close" @click="showFolderSpaceDlg=false">&times;</button>
+      </div>
+      <div class="fs-dialog-body">
+        <p style="font-size:13px;color:#646a73;margin-bottom:12px">将文件夹内所有文档转移到目标空间</p>
+        <div class="fs-form-group">
+          <label class="fs-label">目标空间</label>
+          <select v-model="folderSpaceTarget" class="fs-input">
+            <option v-for="s in spaces" :key="s.id" :value="s.id">{{ s.name }}</option>
+          </select>
+        </div>
+      </div>
+      <div class="fs-dialog-footer">
+        <button class="fs-btn-secondary" @click="showFolderSpaceDlg=false">取消</button>
+        <button class="fs-btn-primary" @click="confirmFolderSpace">转移</button>
+      </div>
+    </div>
+  </div>
+  </Teleport>
+
+  <!-- Batch Space Dialog -->
+  <Teleport to="body">
+  <div v-if="showBatchSpace" class="fs-overlay" @click.self="showBatchSpace=false">
+    <div class="fs-dialog" style="width:400px">
+      <div class="fs-dialog-header">
+        <div class="fs-dialog-title">变更空间 — 已选 {{ selIds.length }} 篇</div>
+        <button class="fs-dialog-close" @click="showBatchSpace=false">&times;</button>
+      </div>
+      <div class="fs-dialog-body">
+        <div class="fs-form-group">
+          <label class="fs-label">目标知识空间</label>
+          <select v-model="batchTargetSpace" class="fs-input">
+            <option v-for="s in spaces" :key="s.id" :value="s.id">{{ s.name }}</option>
+          </select>
+        </div>
+      </div>
+      <div class="fs-dialog-footer">
+        <button class="fs-btn-secondary" @click="showBatchSpace=false">取消</button>
+        <button class="fs-btn-primary" @click="confirmBatchSpace">变更空间</button>
+      </div>
+    </div>
+  </div>
+  </Teleport>
+
+  <!-- Right-click context menu for folders -->
+  <div v-if="ctxMenu.show" class="fs-ctxmenu" :style="{left:ctxMenu.x+'px',top:ctxMenu.y+'px'}" @click.stop @mouseleave="ctxMenu.show=false">
+    <div class="fs-ctxmenu-item" @click="pickFolder(ctxMenu.folder);ctxMenu.show=false">📂 打开</div>
+    <div class="fs-ctxmenu-item" @click="startRenameFolder(ctxMenu.folder);ctxMenu.show=false">✏️ 重命名</div>
+    <div class="fs-ctxmenu-item" @click="startMoveFolder(ctxMenu.folder);ctxMenu.show=false">📁 移动文件夹</div>
+    <div class="fs-ctxmenu-item" @click="startMoveFolderSpace(ctxMenu.folder);ctxMenu.show=false">⇆ 转移空间</div>
+    <div class="fs-ctxmenu-divider"></div>
+    <div class="fs-ctxmenu-item fs-ctxmenu-danger" @click="deleteFolder(ctxMenu.folder);ctxMenu.show=false">🗑 删除</div>
+  </div>
+
+  <!-- AI Smart Search -->
+  <AIQuickSearch />
+
+  <!-- AI Toolbox Dialog -->
+  <Teleport to="body">
+  <div v-if="showAiToolbox" class="fs-overlay" @click.self="showAiToolbox=false">
+    <div class="fs-dialog" style="width:640px;max-height:80vh">
+      <div class="fs-dialog-header">
+        <div class="fs-dialog-title">🤖 AI 工具箱</div>
+        <button class="fs-dialog-close" @click="showAiToolbox=false">&times;</button>
+      </div>
+      <div class="fs-dialog-body" style="max-height:60vh;overflow-y:auto">
+        <!-- Tabs -->
+        <div class="fs-import-tabs">
+          <button :class="['fs-import-tab',{active:aiTab==='search'}]" @click="aiTab='search'">语义检索</button>
+          <button :class="['fs-import-tab',{active:aiTab==='qa'}]" @click="aiTab='qa'">AI 问答</button>
+          <button :class="['fs-import-tab',{active:aiTab==='gen'}]" @click="aiTab='gen'">AI 生成</button>
+        </div>
+
+        <!-- Tab 1: Semantic Search -->
+        <div v-show="aiTab==='search'">
+          <div style="display:flex;gap:6px;margin-bottom:12px">
+            <input v-model="aiSearchQ" class="fs-input" placeholder="用自然语言描述你想找的内容..." @keyup.enter="doAiSearch" style="flex:1" />
+            <select v-model="aiSearchTopK" class="fs-input" style="width:70px"><option>3</option><option>5</option><option>10</option></select>
+            <button class="fs-btn-primary" @click="doAiSearch" :disabled="!aiSearchQ.trim()||aiSearching">搜索</button>
+          </div>
+          <div v-if="aiSearching" style="text-align:center;padding:20px;color:#8f959e">AI 语义检索中...</div>
+          <div v-if="aiSearchResults.length">
+            <div v-for="r in aiSearchResults" :key="r.id" style="padding:10px 0;border-bottom:1px solid #f0f0f0">
+              <div style="display:flex;align-items:center;gap:8px">
+                <span style="font-size:13px;font-weight:500;color:#3370ff;cursor:pointer" @click="previewDoc(r)">{{ r.title }}</span>
+                <span style="font-size:11px;background:#e8f0fe;color:#3370ff;padding:1px 6px;border-radius:8px">相似度 {{ (r.score*100).toFixed(0) }}%</span>
+              </div>
+              <div style="font-size:12px;color:#646a73;margin-top:4px;line-height:1.5">{{ (r.content||'').slice(0,200) }}</div>
+              <div v-if="r.tags?.length" style="margin-top:4px;display:flex;gap:4px;flex-wrap:wrap">
+                <span v-for="t in r.tags" :key="t" style="font-size:10px;background:#f2f3f5;padding:1px 6px;border-radius:4px;color:#8f959e">{{ t }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 2: AI Q&A -->
+        <div v-show="aiTab==='qa'">
+          <div style="display:flex;gap:6px;margin-bottom:12px">
+            <input v-model="aiQuestion" class="fs-input" placeholder="向知识库提问..." @keyup.enter="askAI" style="flex:1" />
+            <button class="fs-btn-primary" @click="askAI" :disabled="!aiQuestion.trim()||aiLoading">提问</button>
+          </div>
+          <div v-if="aiLoading" style="text-align:center;padding:20px;color:#8f959e">AI 思考中...</div>
+          <div v-if="aiAnswer" style="padding:12px;background:#f0f9ff;border-radius:6px;font-size:13px;line-height:1.8;white-space:pre-wrap;margin-bottom:12px">{{ aiAnswer }}</div>
+          <div v-if="aiSources?.length" style="font-size:12px;color:#8f959e">
+            <b>参考来源：</b>
+            <div v-for="s in aiSources" :key="s.id" style="margin-top:4px;cursor:pointer;color:#3370ff" @click="previewDoc(s)">{{ s.title }}</div>
+          </div>
+        </div>
+
+        <!-- Tab 3: AI Generate -->
+        <div v-show="aiTab==='gen'">
+          <div style="display:flex;gap:12px;margin-bottom:12px">
+            <!-- Folder tree selector -->
+            <div style="width:240px;border:1px solid #e5e6e8;border-radius:6px;max-height:240px;overflow-y:auto">
+              <div style="padding:6px 10px;font-size:12px;font-weight:600;color:#646a73;border-bottom:1px solid #f0f0f0">选择文件夹/文档</div>
+              <div v-for="f in flatFolders" :key="f.path" style="padding:3px 10px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:4px"
+                :style="{background:aiGenFolder===f.path?'#e8f0fe':''}" @click="toggleAiGenFolder(f.path)">
+                <input type="checkbox" :checked="aiGenFolder===f.path" style="margin:0" @click.stop="toggleAiGenFolder(f.path)" />
+                📁 {{ f.path==='/'?'根目录':f.name||f.path }}
+              </div>
+              <div v-if="!aiGenFolder" style="padding:8px 10px;font-size:11px;color:#8f959e">点击文件夹选择该文件夹下所有文档，或展开选择具体文档</div>
+            </div>
+            <!-- Document list in selected folder -->
+            <div style="flex:1;border:1px solid #e5e6e8;border-radius:6px;max-height:240px;overflow-y:auto">
+              <div style="padding:6px 10px;font-size:12px;font-weight:600;color:#646a73;border-bottom:1px solid #f0f0f0">
+                已选 <b>{{ aiGenDocIds.length }}</b> 篇{{ aiGenFolder ? '（文件夹模式：'+aiGenFolder+'）' : '' }}
+              </div>
+              <div v-if="aiGenDocIds.length===0" style="padding:16px;text-align:center;color:#8f959e;font-size:12px">
+                不选则用最近 30 篇文档
+              </div>
+              <div v-for="d in aiGenDocList" :key="d.id" style="padding:3px 10px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px"
+                :style="{background:aiGenDocIds.includes(d.id)?'#f0f9ff':''}" @click="toggleAiGenDoc(d.id)">
+                <input type="checkbox" :checked="aiGenDocIds.includes(d.id)" style="margin:0" />
+                <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ d.title }}</span>
+                <span style="font-size:10px;color:#8f959e">{{ d.doc_type||'' }}</span>
+              </div>
+            </div>
+          </div>
+          <div style="margin-bottom:8px">
+            <input v-model="aiGenTitle" class="fs-input" placeholder="报告标题（可选，如：Q3电机研发技术总结）" style="width:100%;box-sizing:border-box;margin-bottom:8px" />
+            <textarea v-model="aiGenRequirement" class="fs-input" placeholder="描述你需要的报告内容……&#10;&#10;例如：&#10;- 对比分析各方案的技术参数优劣&#10;- 列出关键风险点和应对措施&#10;- 总结近3个月的项目进展和里程碑&#10;- 提取所有测试数据并按指标分类" style="width:100%;box-sizing:border-box;height:100px;resize:vertical;font-size:12px"></textarea>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+            <button class="fs-btn-primary" @click="doAiGen('report')" :disabled="aiGenLoading">
+              {{ aiGenLoading && aiGenMode==='report' ? '生成中...' : '📄 生成方案/报告' }}
+            </button>
+            <button class="fs-btn-primary" @click="doAiGen('summarize')" :disabled="aiGenLoading" style="background:#00a870">
+              {{ aiGenLoading && aiGenMode==='summarize' ? '生成中...' : '📝 生成纪要/摘要' }}
+            </button>
+            <button class="fs-btn-primary" @click="doAiGen('keypoints')" :disabled="aiGenLoading" style="background:#f08c00">
+              {{ aiGenLoading && aiGenMode==='keypoints' ? '生成中...' : '📋 提取关键点' }}
+            </button>
+          </div>
+          <div v-if="aiGenLoading" style="text-align:center;padding:20px;color:#8f959e">AI 正在生成，请稍候...</div>
+          <div v-if="aiGenResult" style="padding:16px;background:#fafafa;border-radius:6px;font-size:13px;line-height:1.8;white-space:pre-wrap;max-height:300px;overflow-y:auto">{{ aiGenResult }}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  </Teleport>
+
+  <!-- Main Content -->
+  <div class="fs-main">
+    <!-- Top Bar -->
+    <div class="fs-topbar">
+      <div class="fs-search-wrap">
+        <input v-model="searchText" placeholder="搜索文档名称或内容" class="fs-search" @keyup.enter="loadDocs" />
+        <span v-if="searchText" class="fs-search-clear" @click="searchText='';loadDocs()">x</span>
+      </div>
+      <div class="fs-filter-row">
+        <select v-model="filterType" @change="loadDocs" class="fs-filter-select">
+          <option value="">全部类型</option>
+          <option v-for="c in allCats" :key="c" :value="c">{{ typeLabel(c) }}</option>
+        </select>
+        <select v-model="sortBy" @change="reSort" class="fs-filter-select">
+          <option value="newest">最近更新</option>
+          <option value="oldest">最早更新</option>
+          <option value="name">名称排序</option>
+        </select>
+        <button class="fs-ai-topbtn" @click="showAiToolbox=true">🤖 AI 工具箱</button>
+        <button class="fs-ai-topbtn" @click="openExtShare" style="background:#00a870;border-color:#00a870">🔗 外部分享</button>
+        <span class="fs-count">{{ filteredDocs.length }} 篇</span>
+        <div class="fs-view-btns">
+          <button :class="{on:viewMode==='card'}" @click="viewMode='card'" title="卡片视图">&#9638;</button>
+          <button :class="{on:viewMode==='table'}" @click="viewMode='table'" title="列表视图">&#9776;</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Batch Bar -->
+    <div v-if="selIds.length" class="fs-batch-bar">
+      <span>已选择 {{ selIds.length }} 个项目</span>
+      <select v-model="batchOp" @change="doBatchOp" class="fs-filter-select">
+        <option value="">批量操作...</option>
+        <option value="move">移动文件夹</option>
+        <option value="space">变更空间</option>
+        <option value="tag">标签</option>
+        <option value="type">分类</option>
+        <option value="delete">删除</option>
+      </select>
+      <button class="fs-link-text" @click="selIds=[]">取消</button>
+    </div>
+
+    <!-- Document List -->
+    <div class="fs-doc-area" v-loading="loading">
+      <div v-if="viewMode==='card'" class="fs-doc-grid">
+        <div v-for="d in pagedDocs" :key="d.id" class="fs-doc-card">
+          <div class="fs-card-left" @click="openPreview(d)">
+            <div class="fs-card-icon">{{ fileIcon(d) }}</div>
+            <div class="fs-card-body">
+              <div class="fs-card-title">{{ d.title }}</div>
+              <div class="fs-card-meta">
+                <span>{{ (d.folder||'/').split('/').pop()||'根目录' }}</span>
+                <span>{{ typeLabel(d.doc_type) }}</span>
+                <span>{{ (d.created_at||'').slice(0,10) }}</span>
+              </div>
+              <div class="fs-card-tags" v-if="(d.tags||[]).length">
+                <span v-for="t in (d.tags||[]).slice(0,3)" :key="t" class="fs-tag">{{ t }}</span>
+              </div>
+            </div>
+          </div>
+          <div class="fs-card-right">
+            <input type="checkbox" :checked="selIds.includes(d.id)" @click.stop @change="toggleSel(d.id)" class="fs-card-check" />
+            <button class="fs-card-btn" @click.stop="openPreview(d)" title="预览">预览</button>
+            <button class="fs-card-btn" @click.stop="startEdit(d)" title="编辑">编辑</button>
+            <button class="fs-card-btn" @click.stop="openShareDialog(d)" title="分享">分享</button>
+            <button class="fs-card-btn" @click.stop="delDoc(d.id)" title="删除" style="color:#e74c3c">删除</button>
+          </div>
+        </div>
+        <div v-if="!loading && filteredDocs.length===0" class="fs-empty">
+          <div class="fs-empty-icon">&#128196;</div>
+          <div class="fs-empty-title">暂无文档</div>
+          <div class="fs-empty-desc">点击上方「新建」按钮添加文档，或切换到共享知识库浏览</div>
+        </div>
+      </div>
+
+      <table v-else class="fs-table" v-loading="loading">
+        <thead><tr>
+          <th style="width:36px"><input type="checkbox" @change="toggleAll" :checked="allSelected" /></th>
+          <th>名称</th><th style="width:100px">类型</th><th style="width:120px">文件夹</th><th style="width:100px">更新日期</th>
+        </tr></thead>
+        <tbody>
+          <tr v-for="d in pagedDocs" :key="d.id" @click="openPreview(d)" class="fs-tr">
+            <td><input type="checkbox" :checked="selIds.includes(d.id)" @click.stop @change="toggleSel(d.id)" /></td>
+            <td><span class="fs-card-icon-sm">{{ fileIcon(d) }}</span> {{ d.title }}</td>
+            <td>{{ typeLabel(d.doc_type) }}</td>
+            <td>{{ (d.folder||'/').split('/').pop()||'根目录' }}</td>
+            <td>{{ (d.created_at||'').slice(0,10) }}</td>
+            <td @click.stop style="white-space:nowrap">
+              <button class="fs-card-btn" @click="openPreview(d)">预览</button>
+              <button class="fs-card-btn" @click="startEdit(d)">编辑</button>
+              <button class="fs-card-btn" @click="openShareDialog(d)">分享</button>
+              <button class="fs-card-btn" @click="delDoc(d.id)" style="color:#e74c3c">删除</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <div v-if="!loading && filteredDocs.length===0 && viewMode==='table'" class="fs-empty">
+        <div class="fs-empty-title">暂无文档</div>
+      </div>
+    </div>
+
+    <!-- Pagination -->
+    <div v-if="totalPages>1" class="fs-pager">
+      <button :disabled="page<=1" @click="page--">上一页</button>
+      <button v-for="p in pageList" :key="p" :class="{active:p===page}" @click="page=p">{{ p }}</button>
+      <button :disabled="page>=totalPages" @click="page++">下一页</button>
+    </div>
+  </div>
+
+  <!-- Preview Dialog -->
+  <Teleport to="body">
+  <div v-if="showPreview" class="fs-overlay" @click.self="closePreview">
+    <div class="fs-dialog" style="width:800px;max-height:85vh">
+      <div class="fs-dialog-header">
+        <div class="fs-dialog-title">{{ previewDoc?.title }}</div>
+        <button class="fs-dialog-close" @click="closePreview">&times;</button>
+      </div>
+      <div class="fs-dialog-body">
+        <div class="fs-preview-meta">
+          <span v-if="previewDoc?.doc_type">{{ typeLabel(previewDoc.doc_type) }}</span>
+          <span v-if="previewDoc?.folder">/ {{ previewDoc.folder }}</span>
+          <span>{{ (previewDoc?.created_at||'').slice(0,10) }}</span>
+        </div>
+        <div v-if="previewDoc?.file_path">
+          <div v-if="previewLoading" class="fs-loading">加载预览中...</div>
+          <iframe v-else-if="previewHtml" :srcdoc="previewHtml" class="fs-preview-iframe"></iframe>
+          <button v-else class="fs-btn-secondary" @click="loadPreview">加载文件预览</button>
+          <div style="margin-top:8px">
+            <a :href="'/api/knowledge/download/'+previewDoc.id" target="_blank" class="fs-link-text">下载原文件</a>
+            <button class="fs-link-text" style="margin-left:12px" @click="closePreview();startEdit(previewDoc)">编辑信息</button>
+          </div>
+        </div>
+        <div v-if="previewDoc?.content" class="fs-preview-content">{{ previewDoc.content }}</div>
+        <div v-if="!previewDoc?.file_path && !previewDoc?.content" class="fs-empty" style="padding:40px">
+          <div class="fs-empty-title">纯文本条目，无附件</div>
+        </div>
+        <div v-if="previewDoc?.tags?.length" style="margin-top:12px">
+          <span v-for="t in previewDoc.tags" :key="t" class="fs-tag">{{ t }}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+  </Teleport>
+
+  <!-- Edit Dialog -->
+  <Teleport to="body">
+  <div v-if="showEdit" class="fs-overlay" @click.self="showEdit=false">
+    <div class="fs-dialog" style="width:480px">
+      <div class="fs-dialog-header">
+        <div class="fs-dialog-title">编辑文档</div>
+        <button class="fs-dialog-close" @click="showEdit=false">&times;</button>
+      </div>
+      <div class="fs-dialog-body">
+        <div class="fs-form-group">
+          <label class="fs-label">标题</label>
+          <input v-model="editForm.title" class="fs-input" />
+        </div>
+        <div class="fs-form-group">
+          <label class="fs-label">分类</label>
+          <select v-model="editForm.doc_type" class="fs-input"><option v-for="c in allCats" :key="c" :value="c">{{ typeLabel(c) }}</option></select>
+        </div>
+        <div class="fs-form-group">
+          <label class="fs-label">文件夹</label>
+          <input v-model="editForm.folder" class="fs-input" placeholder="如：技术文档/电机" />
+        </div>
+        <div class="fs-form-group">
+          <label class="fs-label">标签</label>
+          <input v-model="editForm.tagsStr" class="fs-input" placeholder="用逗号分隔，如：电机, 仿真" />
+        </div>
+      </div>
+      <div class="fs-dialog-footer">
+        <button class="fs-btn-secondary" @click="showEdit=false">取消</button>
+        <button class="fs-btn-primary" @click="saveEdit" :disabled="saving">保存</button>
+      </div>
+    </div>
+  </div>
+  </Teleport>
+
+  <!-- Import Dialog (Unified: File / Folder / URL) -->
+  <Teleport to="body">
+  <div v-if="showImport" class="fs-overlay" @click.self="showImport=false">
+    <div class="fs-dialog" style="width:560px">
+      <div class="fs-dialog-header">
+        <div class="fs-dialog-title">导入文档</div>
+        <button class="fs-dialog-close" @click="showImport=false">&times;</button>
+      </div>
+      <div class="fs-dialog-body">
+        <!-- Tabs -->
+        <div class="fs-import-tabs">
+          <button :class="['fs-import-tab',{active:importTab==='file'}]" @click="importTab='file'">导入文件</button>
+          <button :class="['fs-import-tab',{active:importTab==='folder'}]" @click="importTab='folder'">导入文件夹</button>
+          <button :class="['fs-import-tab',{active:importTab==='url'}]" @click="importTab='url'">导入在线文件</button>
+        </div>
+
+        <!-- Tab 1: Import File -->
+        <div v-show="importTab==='file'">
+          <div class="fs-form-group">
+            <label class="fs-label">目标文件夹（可选）</label>
+            <input v-model="importTargetFolder" class="fs-input" placeholder="如：技术文档/电机" />
+          </div>
+          <div class="fs-form-group">
+            <label class="fs-label">选择文件</label>
+            <div class="fs-dropzone" @click="$refs.fileMultiInput?.click()" @dragover.prevent @drop.prevent="onDropFiles">
+              <div v-if="importFiles.length===0">
+                <div class="fs-dropzone-icon">+</div>
+                <div>点击选择文件或拖拽到此处（可多选）</div>
+              </div>
+              <div v-else class="fs-file-list">
+                <div v-for="(f,i) in importFiles" :key="i" class="fs-file-item">
+                  <span class="fs-file-name">{{ f.name }}</span>
+                  <span class="fs-file-size">{{ fmtSize(f.size) }}</span>
+                  <button class="fs-file-remove" @click.stop="importFiles.splice(i,1)">&times;</button>
+                </div>
+              </div>
+            </div>
+            <input ref="fileMultiInput" type="file" multiple style="display:none" @change="onPickFiles" />
+          </div>
+        </div>
+
+        <!-- Tab 2: Import Folder -->
+        <div v-show="importTab==='folder'">
+          <div class="fs-form-group">
+            <label class="fs-label">目标文件夹（可选）</label>
+            <input v-model="importTargetFolder" class="fs-input" placeholder="如：技术文档/电机" />
+          </div>
+          <div class="fs-form-group">
+            <label class="fs-label">选择文件夹</label>
+            <div class="fs-dropzone" @click="$refs.folderInput?.click()">
+              <div v-if="importFolderFiles.length===0">
+                <div class="fs-dropzone-icon">&#128193;</div>
+                <div>点击选择电脑中的文件夹</div>
+              </div>
+              <div v-else>
+                <div class="fs-folder-info">
+                  <span class="fs-folder-name">{{ importFolderName }}</span>
+                  <span class="fs-file-count">{{ importFolderFiles.length }} 个文件</span>
+                </div>
+                <div class="fs-file-list" style="max-height:200px;overflow-y:auto">
+                  <div v-for="(f,i) in importFolderFiles.slice(0,20)" :key="i" class="fs-file-item">
+                    <span class="fs-file-name">{{ f.relativePath || f.name }}</span>
+                    <span class="fs-file-size">{{ fmtSize(f.size) }}</span>
+                  </div>
+                  <div v-if="importFolderFiles.length>20" class="fs-file-more">...还有 {{ importFolderFiles.length-20 }} 个文件</div>
+                </div>
+              </div>
+            </div>
+            <input ref="folderInput" type="file" webkitdirectory style="display:none" @change="onPickFolder" />
+          </div>
+        </div>
+
+        <!-- Tab 3: Import URL -->
+        <div v-show="importTab==='url'">
+          <div class="fs-form-group">
+            <label class="fs-label">网页 URL</label>
+            <input v-model="importUrl" class="fs-input" placeholder="https://..." @keyup.enter="doImportUrl" />
+          </div>
+          <div class="fs-form-group">
+            <label class="fs-label">目标文件夹（可选）</label>
+            <input v-model="importTargetFolder" class="fs-input" placeholder="/" />
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;gap:12px;padding:0 0 12px 0">
+        <div style="flex:1">
+          <label class="fs-label">知识空间</label>
+          <select v-model="importSpace" class="fs-input" style="width:100%">
+            <option v-for="s in spaces" :key="s.id" :value="s.id">{{ s.name }}</option>
+          </select>
+        </div>
+        <div style="flex:1">
+          <label class="fs-label">可见性</label>
+          <select v-model="importVisibility" class="fs-input" style="width:100%">
+            <option value="shared">共享 — 空间内所有人可见</option>
+            <option value="private">私有 — 仅自己可见</option>
+          </select>
+        </div>
+      </div>
+      <div class="fs-dialog-footer">
+        <button class="fs-btn-secondary" @click="showImport=false">取消</button>
+        <button v-if="importTab==='url'" class="fs-btn-primary" @click="doImportUrl" :disabled="!importUrl||importing">导入</button>
+        <button v-else class="fs-btn-primary" @click="doImportFiles" :disabled="(!importFiles.length&&!importFolderFiles.length)||importing">
+          {{ importing ? '上传中...' : '上传' }}
+        </button>
+      </div>
+      <div v-if="importProgress" class="fs-import-progress">
+        <div class="fs-progress-bar"><div class="fs-progress-fill" :style="{width:importProgress+'%'}"></div></div>
+        <span>{{ importProgress }}%</span>
+      </div>
+    </div>
+  </div>
+  </Teleport>
+
+  <!-- Share Dialog -->
+  <Teleport to="body">
+  <div v-if="showShare" class="fs-overlay" @click.self="showShare=false">
+    <div class="fs-dialog" style="width:500px">
+      <div class="fs-dialog-header">
+        <div class="fs-dialog-title">分享文档: {{ shareDoc?.title }}</div>
+        <button class="fs-dialog-close" @click="showShare=false">&times;</button>
+      </div>
+      <div class="fs-dialog-body">
+        <div v-if="currentShares.length" style="margin-bottom:16px">
+          <div style="font-size:13px;font-weight:600;margin-bottom:8px">已分享给</div>
+          <div v-for="s in currentShares" :key="s.user_id" style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid #f0f0f0">
+            <span>{{ s.username }}</span>
+            <span style="display:flex;align-items:center;gap:6px">
+              <select :value="s.access_level" @change="updateShareLevel(shareDoc.id,s.user_id,$event.target.value)" class="fs-input" style="font-size:11px;padding:2px 4px;width:auto">
+                <option value="limited">受限(200字+AI)</option>
+                <option value="full">完整</option>
+              </select>
+              <button @click="removeShare(shareDoc.id,s.user_id)" style="color:#e74c3c;background:none;border:none;cursor:pointer;font-size:12px">移除</button>
+            </span>
+          </div>
+        </div>
+        <div>
+          <div style="font-size:13px;font-weight:600;margin-bottom:8px">添加用户</div>
+          <div style="display:flex;gap:6px">
+            <input v-model="shareSearchQ" class="fs-input" placeholder="搜索用户名..." @input="searchUsersForShare" style="flex:1" />
+            <select v-model="shareAddLevel" class="fs-input" style="width:110px;font-size:12px">
+              <option value="limited">受限</option>
+              <option value="full">完整</option>
+            </select>
+          </div>
+          <div v-if="shareResults.length" style="margin-top:8px;max-height:180px;overflow-y:auto;border:1px solid #e5e6e8;border-radius:4px">
+            <div v-for="u in shareResults" :key="u.id" style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;border-bottom:1px solid #f0f0f0;cursor:pointer" @click="addShare(shareDoc.id,u)">
+              <span style="font-size:13px">{{ u.username }}</span>
+              <span style="font-size:11px;color:#3370ff">添加</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="fs-dialog-footer">
+        <button class="fs-btn-secondary" @click="showShare=false">关闭</button>
+      </div>
+    </div>
+  </div>
+  </Teleport>
+
+  <!-- External Share Dialog -->
+  <Teleport to="body">
+  <div v-if="showExtShareDlg" class="fs-overlay" @click.self="showExtShareDlg=false">
+    <div class="fs-dialog" style="width:560px">
+      <div class="fs-dialog-header">
+        <div class="fs-dialog-title">🔗 创建外部分享链接</div>
+        <button class="fs-dialog-close" @click="showExtShareDlg=false">&times;</button>
+      </div>
+      <div class="fs-dialog-body">
+        <div class="fs-form-group">
+          <label class="fs-label">链接名称</label>
+          <input v-model="extShare.name" class="fs-input" placeholder="如：电机产品资料" />
+        </div>
+        <div class="fs-form-group">
+          <label class="fs-label">欢迎语</label>
+          <input v-model="extShare.welcome" class="fs-input" placeholder="如：您好！这里是我们最新的产品资料" />
+        </div>
+        <div class="fs-form-group">
+          <label class="fs-label">选择要分享的文件夹/文档（不选则分享整个空间）</label>
+          <div style="display:flex;gap:8px;height:240px">
+            <!-- Folder tree -->
+            <div style="width:200px;border:1px solid #e5e6e8;border-radius:6px;overflow-y:auto;font-size:12px;flex-shrink:0">
+              <div @click="extShareFolder=''" :style="{padding:'6px 10px',cursor:'pointer',background:!extShareFolder?'#e8f0fe':''}">
+                <span :style="{fontWeight:!extShareFolder?'600':''}">📂 全部文档</span>
+                <span style="float:right;color:#8f959e">{{ docs.length }}</span>
+              </div>
+              <template v-for="f in extFlatFolderList" :key="f.path">
+                <div @click="extShareFolder=f.path;extShareFolderOpen[f.path]=!extShareFolderOpen[f.path]" :style="{padding:'4px 10px',paddingLeft:(f.depth*14+10)+'px',cursor:'pointer',background:extShareFolder===f.path?'#e8f0fe':'',display:'flex',alignItems:'center',gap:'4px',fontSize:'12px'}">
+                  <span v-if="f.children?.length" style="font-size:10px;width:10px;flex-shrink:0">{{ extShareFolderOpen[f.path] ? '▼' : '▶' }}</span>
+                  <span v-else style="width:10px;flex-shrink:0"></span>
+                  <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">📁 {{ f.name }}</span>
+                  <span v-if="f.count" style="font-size:10px;color:#8f959e;flex-shrink:0">{{ f.count }}</span>
+                </div>
+              </template>
+            </div>
+            <!-- Document list for selected folder -->
+            <div style="flex:1;border:1px solid #e5e6e8;border-radius:6px;overflow-y:auto;font-size:12px">
+              <div v-if="extShareFolderDocs.length===0" style="padding:20px;text-align:center;color:#8f959e">
+                点击左侧文件夹查看文档<br/>或直接勾选下方文档
+              </div>
+              <div v-for="d in extShareFolderDocs" :key="d.id" style="padding:4px 8px;display:flex;align-items:center;gap:6px;cursor:pointer;border-bottom:1px solid #f5f5f5" @click="toggleExtDoc(d.id)">
+                <input type="checkbox" :checked="extShare.docIds.includes(d.id)" style="margin:0;flex-shrink:0" />
+                <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ d.title }}</span>
+                <span style="font-size:10px;color:#8f959e;flex-shrink:0">{{ typeLabel(d.doc_type) }}</span>
+              </div>
+            </div>
+          </div>
+          <div style="font-size:11px;color:#8f959e;margin-top:4px;display:flex;align-items:center;gap:10px">
+            <span>已选 <b>{{ extShare.docIds.length }}</b> 篇</span>
+            <span v-if="extShare.docIds.length>0" style="color:#e74c3c;cursor:pointer;font-size:11px" @click="extShare.docIds=[]">清除选择</span>
+            <span v-if="extShareFolder" style="color:#3370ff;cursor:pointer;font-size:11px" @click="selectEntireFolder(extShareFolder)">全选此文件夹</span>
+          </div>
+        </div>
+        <!-- Server address (auto-detected, editable) -->
+        <div v-if="!extShareLink" style="margin-top:8px;font-size:11px;color:#8f959e">
+          <span>公网地址:</span>
+          <input v-model="extServerHost" class="fs-input" style="width:100%;font-size:11px;padding:2px 6px;margin-top:4px" :placeholder="'自动检测中...'" />
+          <div style="margin-top:2px">自动检测 ngrok/Cloudflare 隧道地址，也可手动修改</div>
+        </div>
+        <!-- Generated link with QR code -->
+        <div v-if="extShareLink" style="margin-top:12px;padding:16px;background:#f0f9ff;border-radius:8px;border:1px solid #b3d8ff;text-align:center">
+          <div style="font-size:14px;font-weight:600;margin-bottom:12px;color:#00a870">✅ 链接已生成 · 客户扫码即可访问</div>
+          <div style="display:flex;gap:20px;align-items:center;justify-content:center;flex-wrap:wrap">
+            <!-- QR Code -->
+            <div style="padding:8px;background:#fff;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.08)">
+              <img :src="extQrUrl" style="width:180px;height:180px;display:block" alt="二维码" />
+            </div>
+            <div style="text-align:left">
+              <div style="font-size:12px;color:#8f959e;margin-bottom:8px">客户在任何地方扫码都能访问（通过公网隧道）</div>
+              <div style="display:flex;gap:8px;margin-bottom:8px">
+                <input :value="extShareLink" readonly class="fs-input" style="width:260px;font-size:11px" @focus="$event.target.select()" />
+                <button class="fs-btn-primary" @click="copyExtLink" style="white-space:nowrap;font-size:12px">复制链接</button>
+              </div>
+              <div style="font-size:11px;color:#8f959e">也可将二维码图片截图发送给客户</div>
+              <div v-if="extShareCopied" style="color:#00a870;font-size:12px;margin-top:4px">已复制到剪贴板</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="fs-dialog-footer">
+        <button class="fs-btn-secondary" @click="showExtShareDlg=false">关闭</button>
+        <button class="fs-btn-primary" @click="createExtShare" :disabled="!extShare.name.trim()" style="background:#00a870">生成链接</button>
+      </div>
+    </div>
+  </div>
+  </Teleport>
+
+  <!-- Existing Share Links -->
+  <Teleport to="body">
+  <div v-if="showExtLinks" class="fs-overlay" @click.self="showExtLinks=false">
+    <div class="fs-dialog" style="width:600px">
+      <div class="fs-dialog-header">
+        <div class="fs-dialog-title">🔗 外部分享链接管理</div>
+        <button class="fs-dialog-close" @click="showExtLinks=false">&times;</button>
+      </div>
+      <div class="fs-dialog-body">
+        <div v-if="!extLinks.length" style="text-align:center;padding:40px;color:#8f959e">暂无外部分享链接</div>
+        <div v-for="s in extLinks" :key="s.id" style="padding:10px;margin-bottom:8px;border:1px solid #e5e6e8;border-radius:6px">
+          <div style="display:flex;align-items:center;justify-content:space-between">
+            <span style="font-weight:600;font-size:14px">{{ s.name }}</span>
+            <span style="display:flex;gap:6px">
+              <button :class="s.enabled?'fs-link-text':'fs-link-text'" @click="toggleExtLink(s)" :style="{color:s.enabled?'#00a870':'#e74c3c'}">{{ s.enabled?'启用':'停用' }}</button>
+              <button class="fs-link-text" @click="copyExtLinkUrl(s.token)" style="color:#3370ff">复制链接</button>
+              <button class="fs-link-text" @click="showExtQrForLink(s.token)" style="color:#00a870">二维码</button>
+              <button class="fs-link-text" @click="deleteExtLink(s.id)" style="color:#e74c3c">删除</button>
+            </span>
+          </div>
+          <div style="font-size:12px;color:#8f959e;margin-top:4px">
+            问题数: {{ s.question_count||0 }} · 文档: {{ (s.doc_ids||[]).length || '全部' }}篇 · {{ (s.created_at||'').slice(0,10) }}
+          </div>
+        </div>
+      </div>
+      <div class="fs-dialog-footer">
+        <button class="fs-btn-secondary" @click="showExtLinks=false">关闭</button>
+      </div>
+    </div>
+  </div>
+  </Teleport>
+
+  <!-- New Folder Dialog -->
+  <Teleport to="body">
+  <div v-if="showFolderDlg" class="fs-overlay" @click.self="showFolderDlg=false">
+    <div class="fs-dialog" style="width:400px">
+      <div class="fs-dialog-header">
+        <div class="fs-dialog-title">新建文件夹</div>
+        <button class="fs-dialog-close" @click="showFolderDlg=false">&times;</button>
+      </div>
+      <div class="fs-dialog-body">
+        <div class="fs-form-group">
+          <label class="fs-label">名称</label>
+          <input v-model="newFolder" class="fs-input" placeholder="多层级用 / 分隔" @keyup.enter="createFolder" />
+        </div>
+        <div class="fs-form-group" v-if="kbMode==='shared'">
+          <label class="fs-label">所属空间</label>
+          <select v-model="newFolderSpace" class="fs-input"><option v-for="s in spaces" :key="s.id" :value="s.id">{{ s.name }}</option></select>
+        </div>
+      </div>
+      <div class="fs-dialog-footer">
+        <button class="fs-btn-secondary" @click="showFolderDlg=false">取消</button>
+        <button class="fs-btn-primary" @click="createFolder">创建</button>
+      </div>
+    </div>
+  </div>
+  </Teleport>
+
+  <!-- Space Dialog -->
+  <Teleport to="body">
+  <div v-if="showSpaceDlg" class="fs-overlay" @click.self="showSpaceDlg=false">
+    <div class="fs-dialog" style="width:400px">
+      <div class="fs-dialog-header">
+        <div class="fs-dialog-title">{{ spaceForm.id?'编辑':'新建' }}空间</div>
+        <button class="fs-dialog-close" @click="showSpaceDlg=false">&times;</button>
+      </div>
+      <div class="fs-dialog-body">
+        <div class="fs-form-group"><label class="fs-label">名称</label><input v-model="spaceForm.name" class="fs-input" /></div>
+        <div class="fs-form-group"><label class="fs-label">描述</label><input v-model="spaceForm.desc" class="fs-input" /></div>
+        <div class="fs-form-group"><label class="fs-label"><input type="checkbox" v-model="spaceForm.is_public" /> 公开访问</label></div>
+      </div>
+      <div class="fs-dialog-footer">
+        <button class="fs-btn-secondary" @click="showSpaceDlg=false">取消</button>
+        <button class="fs-btn-primary" @click="saveSpace">保存</button>
+      </div>
+    </div>
+  </div>
+  </Teleport>
+
+  <!-- Batch Move Dialog -->
+  <Teleport to="body">
+  <div v-if="showBatchMove" class="fs-overlay" @click.self="showBatchMove=false">
+    <div class="fs-dialog" style="width:400px">
+      <div class="fs-dialog-header">
+        <div class="fs-dialog-title">移动到文件夹</div>
+        <button class="fs-dialog-close" @click="showBatchMove=false">&times;</button>
+      </div>
+      <div class="fs-dialog-body">
+        <div class="fs-form-group">
+          <label class="fs-label">目标文件夹</label>
+          <select v-model="batchTarget" class="fs-input">
+            <option value="/">/ 根目录</option>
+            <option v-for="f in flatFolders" :key="f.path" :value="f.path">{{ f.path }}</option>
+          </select>
+        </div>
+        <div class="fs-form-group">
+          <label class="fs-label">或输入新路径</label>
+          <input v-model="batchTarget" class="fs-input" placeholder="/新路径" />
+        </div>
+        <div class="fs-form-group" v-if="kbMode==='shared'">
+          <label class="fs-label">目标空间</label>
+          <select v-model="batchTargetSpace" class="fs-input"><option value="">当前空间</option><option v-for="s in spaces" :key="s.id" :value="s.id">{{ s.name }}</option></select>
+        </div>
+      </div>
+      <div class="fs-dialog-footer">
+        <button class="fs-btn-secondary" @click="showBatchMove=false">取消</button>
+        <button class="fs-btn-primary" @click="confirmBatchMove">移动 {{ selIds.length }} 篇</button>
+      </div>
+    </div>
+  </div>
+  </Teleport>
+
+  <!-- Batch Tag Dialog -->
+  <Teleport to="body">
+  <div v-if="showBatchTag" class="fs-overlay" @click.self="showBatchTag=false">
+    <div class="fs-dialog" style="width:400px">
+      <div class="fs-dialog-header">
+        <div class="fs-dialog-title">设置标签</div>
+        <button class="fs-dialog-close" @click="showBatchTag=false">&times;</button>
+      </div>
+      <div class="fs-dialog-body">
+        <div class="fs-form-group"><label class="fs-label">操作</label>
+          <select v-model="tagAction" class="fs-input"><option value="set">替换为</option><option value="add">添加</option><option value="remove">移除</option></select>
+        </div>
+        <div class="fs-form-group"><label class="fs-label">标签（逗号分隔）</label><input v-model="batchTags" class="fs-input" placeholder="标签1, 标签2" @keyup.enter="confirmBatchTag" /></div>
+      </div>
+      <div class="fs-dialog-footer">
+        <button class="fs-btn-secondary" @click="showBatchTag=false">取消</button>
+        <button class="fs-btn-primary" @click="confirmBatchTag">应用</button>
+      </div>
+    </div>
+  </div>
+  </Teleport>
+
+  <!-- Folder Move Dialog -->
+  <Teleport to="body">
+  <div v-if="showFolderMoveDlg" class="fs-overlay" @click.self="showFolderMoveDlg=false">
+    <div class="fs-dialog" style="width:400px">
+      <div class="fs-dialog-header">
+        <div class="fs-dialog-title">移动文件夹: {{ folderMoveSrc?.name }}</div>
+        <button class="fs-dialog-close" @click="showFolderMoveDlg=false">&times;</button>
+      </div>
+      <div class="fs-dialog-body">
+        <div class="fs-form-group">
+          <label class="fs-label">目标位置</label>
+          <select v-model="folderMoveTarget" class="fs-input">
+            <option value="/">/ 根目录</option>
+            <option v-for="f in flatFolders" :key="f.path" :value="f.path">{{ normFolder(f.path) }}</option>
+          </select>
+        </div>
+        <div class="fs-form-group">
+          <label class="fs-label">或输入路径</label>
+          <input v-model="folderMoveTarget" class="fs-input" placeholder="/目标文件夹" />
+        </div>
+      </div>
+      <div class="fs-dialog-footer">
+        <button class="fs-btn-secondary" @click="showFolderMoveDlg=false">取消</button>
+        <button class="fs-btn-primary" @click="confirmFolderMove">移动</button>
+      </div>
+    </div>
+  </div>
+  </Teleport>
+
+  <!-- Import Settings Dialog -->
+  <Teleport to="body">
+  <div v-if="showImportSettings" class="fs-overlay" @click.self="showImportSettings=false">
+    <div class="fs-dialog" style="width:480px">
+      <div class="fs-dialog-header">
+        <div class="fs-dialog-title">导入设置</div>
+        <button class="fs-dialog-close" @click="showImportSettings=false">&times;</button>
+      </div>
+      <div class="fs-dialog-body">
+        <p style="font-size:13px;color:#646a73;margin-bottom:12px">设置不同导入来源的默认目标文件夹</p>
+        <div class="fs-form-group">
+          <label class="fs-label">项目导入</label>
+          <input v-model="importSettings.project" class="fs-input" placeholder="/项目导入" />
+          <span style="font-size:11px;color:#8f959e">有项目名称时自动定位到 /项目知识库/{项目名}/</span>
+        </div>
+        <div class="fs-form-group">
+          <label class="fs-label">网页导入</label>
+          <input v-model="importSettings.url" class="fs-input" placeholder="/" />
+        </div>
+        <div class="fs-form-group">
+          <label class="fs-label">文件上传</label>
+          <input v-model="importSettings.upload" class="fs-input" placeholder="/" />
+        </div>
+      </div>
+      <div class="fs-dialog-footer">
+        <button class="fs-btn-secondary" @click="showImportSettings=false">取消</button>
+        <button class="fs-btn-primary" @click="saveImportSettings">保存</button>
+      </div>
+    </div>
+  </div>
+  </Teleport>
+
+</div>
+</template>
+
+<script setup>
+import { ref, reactive, computed, onMounted, watch } from 'vue'
+import api from '../api/index.js'
+import AIQuickSearch from '../components/knowledge/AIQuickSearch.vue'
+
+const kbMode = ref('shared')
+const curSpace = ref('default')
+const spaces = ref([])
+const docs = ref([])
+const loading = ref(false)
+const searchText = ref('')
+const filterFolder = ref('')
+const filterType = ref('')
+const sortBy = ref('newest')
+const viewMode = ref('card')
+const page = ref(1); const pageSize = 50
+const selIds = ref([])
+const folderTree = ref([])
+const folderSectionOpen = ref(true)
+const allCats = ref(['技术类','项目类','运营类','销售类','模板类','其他'])
+
+const showPreview = ref(false); const previewDoc = ref(null); const previewHtml = ref(''); const previewLoading = ref(false)
+const showEdit = ref(false); const editForm = reactive({}); const saving = ref(false)
+const showUpload = ref(false); const upFile = ref(null); const upFolder = ref(''); const uploading = ref(false)
+const showFolderDlg = ref(false); const newFolder = ref(''); const newFolderSpace = ref('default')
+const showSpaceDlg = ref(false); const spaceForm = reactive({name:'',desc:'',is_public:false})
+const showImport = ref(false); const importTab = ref('file'); const importFiles = ref([]); const importFolderFiles = ref([]); const importFolderName = ref(''); const importTargetFolder = ref(''); const importUrl = ref(''); const importing = ref(false); const importProgress = ref(0); const importSpace = ref('default'); const importVisibility = ref('shared')
+const showShare = ref(false); const shareDoc = ref(null); const shareSearchQ = ref(''); const shareResults = ref([]); const shareAddLevel = ref('limited'); const currentShares = ref([])
+const showBatchMove = ref(false); const batchTarget = ref('/'); const batchTargetSpace = ref('')
+const showFolderMoveDlg = ref(false); const folderMoveSrc = ref(null); const folderMoveTarget = ref('/')
+const showBatchTag = ref(false); const batchTags = ref(''); const tagAction = ref('set')
+const showBatchSpace = ref(false)
+const showFolderSpaceDlg = ref(false); const folderSpaceSrc = ref(null); const folderSpaceTarget = ref('')
+const ctxMenu = reactive({show:false,x:0,y:0,folder:null})
+const showImportSettings = ref(false); const importSettings = reactive({project:'/项目导入',url:'/',upload:'/'})
+const showAiToolbox = ref(false); const aiTab = ref('search')
+const aiQuestion = ref(''); const aiAnswer = ref(''); const aiSources = ref([]); const aiLoading = ref(false)
+const aiSearchQ = ref(''); const aiSearchTopK = ref(5); const aiSearchResults = ref([]); const aiSearching = ref(false)
+const aiGenDocIds = ref([]); const aiGenFolder = ref(''); const aiGenMode = ref(''); const aiGenResult = ref(''); const aiGenLoading = ref(false); const aiGenTitle = ref(''); const aiGenRequirement = ref('')
+const aiGenDocList = computed(() => {
+  if(!aiGenFolder.value) return docs.value.slice(0,50)
+  return docs.value.filter(d => {
+    const df = (d.folder||'').replace(/^\//,'')
+    const gf = aiGenFolder.value.replace(/^\//,'')
+    return df===gf || df.startsWith(gf+'/')
+  }).slice(0,100)
+})
+function toggleAiGenFolder(fp){
+  if(aiGenFolder.value===fp){aiGenFolder.value='';aiGenDocIds.value=[]}
+  else {
+    aiGenFolder.value=fp
+    // Select all docs in this folder
+    const df = fp.replace(/^\//,'')
+    aiGenDocIds.value = docs.value.filter(d=>{
+      const docf=(d.folder||'').replace(/^\//,'')
+      return docf===df || docf.startsWith(df+'/')
+    }).slice(0,200).map(d=>d.id)
+  }
+}
+function toggleAiGenDoc(id){
+  const idx=aiGenDocIds.value.indexOf(id)
+  if(idx>=0)aiGenDocIds.value.splice(idx,1)
+  else aiGenDocIds.value.push(id)
+}
+const batchOp = ref('')
+
+const filteredDocs = computed(() => {
+  let arr = [...docs.value]
+  if (filterType.value) arr = arr.filter(d => d.doc_type === filterType.value)
+  if (sortBy.value === 'newest') arr.sort((a,b) => (b.created_at||'').localeCompare(a.created_at||''))
+  else if (sortBy.value === 'oldest') arr.sort((a,b) => (a.created_at||'').localeCompare(b.created_at||''))
+  else if (sortBy.value === 'name') arr.sort((a,b) => (a.title||'').localeCompare(b.title||''))
+  return arr
+})
+const totalPages = computed(() => Math.max(1, Math.ceil(filteredDocs.value.length / pageSize)))
+const pagedDocs = computed(() => filteredDocs.value.slice((page.value-1)*pageSize, page.value*pageSize))
+const pageList = computed(() => { const p=[]; for(let i=Math.max(1,page.value-2);i<=Math.min(totalPages.value,page.value+2);i++)p.push(i);return p })
+const allSelected = computed(() => pagedDocs.value.length>0 && pagedDocs.value.every(d=>selIds.value.includes(d.id)))
+const flatFolders = computed(() => { const r=[]; function w(n){for(const x of n){r.push(x);if(x.children)w(x.children)}};w(folderTree.value);return r })
+
+// Recursive flat folder list — only shows visible nodes (parent is open)
+const flatFolderList = computed(() => {
+  const r = []
+  function walk(nodes, depth) {
+    for (const n of nodes) {
+      n.depth = depth
+      r.push(n)
+      if (n.open && n.children?.length) {
+        walk(n.children, depth + 1)
+      }
+    }
+  }
+  walk(folderTree.value, 0)
+  return r
+})
+
+function toggleFolderOpen(f) {
+  f.open = !f.open
+}
+
+async function loadDocs() {
+  loading.value=true; page.value=1
+  try {
+    const p={}; if(searchText.value)p.search=searchText.value; if(filterFolder.value)p.folder=filterFolder.value
+    let url
+    if (kbMode.value==='personal') url = '/knowledge/my-documents'
+    else if (kbMode.value==='shared_with_me') url = '/knowledge/shared-with-me'
+    else url = '/knowledge/spaces/'+curSpace.value+'/documents'
+    docs.value=(await api.get(url,{params:p})).data||[]
+  } catch { docs.value=[] }
+  loading.value=false
+}
+async function loadSpaces() { try { spaces.value=(await api.get('/knowledge/spaces')).data||[] } catch {} }
+async function loadTree() { try { const r=await api.get('/knowledge/folder-tree'); folderTree.value=(r.data||[])[0]?.children||[] } catch(e) { console.error('loadTree failed:', e) } }
+function reSort() { page.value=1 }
+async function pickFolder(f) { if(f.children)f.open=!f.open; filterFolder.value=filterFolder.value===f.path?'':f.path; await loadDocs() }
+async function createFolder() { if(!newFolder.value.trim())return; try { await api.post('/knowledge/folders',{path:newFolder.value.trim()}); showFolderDlg.value=false;newFolder.value='';await loadTree() } catch(e) { alert('创建失败: '+(e?.response?.data?.detail||e.message)) } }
+
+// ── Share functions ──
+async function openShareDialog(doc) {
+  shareDoc.value = doc; showShare.value = true; shareSearchQ.value = ''; shareResults.value = []
+  try { const r = await api.get(`/knowledge/documents/${doc.id}/shares`); currentShares.value = r.data||[] }
+  catch(e) { currentShares.value = []; if(e?.response?.status===403) alert('只有文档所有者可以管理分享') }
+}
+async function searchUsersForShare() {
+  if(!shareSearchQ.value.trim()){shareResults.value=[];return}
+  try { const r = await api.get('/knowledge/users/search',{params:{q:shareSearchQ.value}}); shareResults.value=r.data||[] }
+  catch { shareResults.value=[] }
+}
+async function addShare(docId, user) {
+  try {
+    await api.post(`/knowledge/documents/${docId}/share`,{user_ids:[user.id],access_level:shareAddLevel.value})
+    shareSearchQ.value=''; shareResults.value=[]
+    const r = await api.get(`/knowledge/documents/${docId}/shares`); currentShares.value=r.data||[]
+  } catch(e) { alert('分享失败: '+(e?.response?.data?.detail||e.message)) }
+}
+async function updateShareLevel(docId, userId, level) {
+  try { await api.post(`/knowledge/documents/${docId}/share`,{user_ids:[userId],access_level:level}) }
+  catch(e) { alert('更新失败: '+(e?.response?.data?.detail||e.message)) }
+}
+async function removeShare(docId, userId) {
+  try {
+    await api.delete(`/knowledge/documents/${docId}/shares/${userId}`)
+    const r = await api.get(`/knowledge/documents/${docId}/shares`); currentShares.value=r.data||[]
+  } catch(e) { alert('移除失败: '+(e?.response?.data?.detail||e.message)) }
+}
+
+// ── External Share Link functions ──
+const showExtShareDlg = ref(false); const showExtLinks = ref(false)
+const extShare = reactive({name:'',welcome:'',password:'',docIds:[]})
+const extShareLink = ref(''); const extShareCopied = ref(false); const extLinks = ref([]); const extQrUrl = ref('')
+const extServerHost = ref('')
+
+const extShareFolder = ref(''); const extShareFolderOpen = reactive({})
+
+// Recursive flat folder list for external share dialog
+const extFlatFolderList = computed(() => {
+  const r = []
+  function walk(nodes, depth) {
+    for (const n of nodes) {
+      n.depth = depth
+      r.push(n)
+      if (extShareFolderOpen[n.path] && n.children?.length) {
+        walk(n.children, depth + 1)
+      }
+    }
+  }
+  walk(folderTree.value, 0)
+  return r
+})
+
+const extShareFolderDocs = computed(() => {
+  if (!extShareFolder.value) return docs.value
+  return docs.value.filter(d => {
+    const f = normFolder(d.folder || '/')
+    // Tree path: /default/平台资料/...  Doc folder: /平台资料/...
+    // Strip space prefix from tree path for comparison
+    let t = extShareFolder.value.trim()
+    const parts = t.split('/')
+    // If tree path has space prefix (2+ segments), strip first segment
+    if (parts.length >= 3 && parts[1] && !parts[1].match(/^\d+\.\d+/)) {
+      t = '/' + parts.slice(2).join('/')
+    }
+    return f === t || f.startsWith(t + '/') || f.startsWith('/' + t.replace(/^\//,'') + '/')
+  })
+})
+
+function selectEntireFolder(folderPath) {
+  const target = folderPath || ''
+  const folderDocs = target ? docs.value.filter(d => {
+    const f = normFolder(d.folder || '/')
+    return f === target || f.startsWith(target + '/') || f === '/' + target || f.startsWith('/' + target.replace(/^\//,'') + '/')
+  }) : docs.value
+  const ids = folderDocs.map(d => d.id)
+  // Merge without duplicates
+  const current = new Set(extShare.docIds)
+  ids.forEach(id => current.add(id))
+  extShare.docIds = Array.from(current)
+}
+
+// Normalize folder path: strip network share prefix, keep everything after IP/share/
+function normFolder(f) {
+  if (!f) return '/'
+  f = f.replace(/\\/g, '/').replace(/^\/+/, '')
+  // Strip IP/share/ prefix: 10.x.x.x/sharename/rest -> rest
+  const m = f.match(/^(\d+\.\d+\.\d+\.\d+)\/[^/]+\/(.+)$/)
+  return m ? '/' + m[2] : '/' + f
+}
+
+function toggleExtDoc(id) {
+  const i = extShare.docIds.indexOf(id)
+  if (i>=0) extShare.docIds.splice(i,1); else extShare.docIds.push(id)
+}
+async function createExtShare() {
+  try {
+    const body = { name: extShare.name, welcome: extShare.welcome, password: '', doc_ids: extShare.docIds, space: curSpace.value }
+    const r = await api.post('/knowledge/share-links', body)
+    const link = r.data
+    // Use public URL (ngrok) if available, else LAN IP with http://
+    let host = extServerHost.value
+    if (!host) {
+      try { const si = (await api.get('/server-info')).data; host = si.public_url || `http://${si.lan_ip}:${si.port}` }
+      catch { host = window.location.origin }
+      extServerHost.value = host
+    }
+    // Ensure protocol prefix
+    if (!host.startsWith('http')) host = 'http://' + host
+    extServerHost.value = host
+    extShareLink.value = `${host}/kb/chat/${link.token}`
+    extQrUrl.value = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(extShareLink.value)}`
+    extShareCopied.value = false
+  } catch(e) { alert('创建失败: '+(e?.response?.data?.detail||e.message)) }
+}
+async function openExtShare() {
+  showExtShareDlg.value = true
+  extShare.name = ''; extShare.welcome = ''; extShare.docIds = []; extShareLink.value = ''; extShareCopied.value = false
+  extShareFolder.value = ''
+  if (!extServerHost.value) await fetchServerIp()
+  // Load all docs for folder-based selection
+  try {
+    const p = { limit: 1000 }
+    if (kbMode.value === 'personal') {
+      docs.value = (await api.get('/knowledge/my-documents', { params: p })).data || []
+    } else {
+      docs.value = (await api.get('/knowledge/spaces/' + curSpace.value + '/documents', { params: p })).data || []
+    }
+  } catch { docs.value = [] }
+}
+async function fetchServerIp() {
+  try { const r = await api.get('/server-info'); extServerHost.value = `${r.data.lan_ip}:${r.data.port}` }
+  catch { extServerHost.value = window.location.host }
+}
+function copyExtLink() {
+  if (!extShareLink.value) return
+  navigator.clipboard.writeText(extShareLink.value).then(() => { extShareCopied.value = true; setTimeout(() => extShareCopied.value = false, 2000) })
+}
+function copyExtLinkUrl(token) {
+  const host = extServerHost.value || window.location.origin
+  navigator.clipboard.writeText(`${host}/kb/chat/${token}`)
+  alert('链接已复制')
+}
+function showExtQrForLink(token) {
+  const host = extServerHost.value || window.location.origin
+  const url = `${host}/kb/chat/${token}`
+  window.open(`https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(url)}`, '_blank')
+}
+async function loadExtLinks() {
+  try { extLinks.value = (await api.get('/knowledge/share-links')).data || [] } catch { extLinks.value = [] }
+}
+async function toggleExtLink(s) {
+  try { await api.put(`/knowledge/share-links/${s.id}`, {...s, enabled: !s.enabled}); await loadExtLinks() }
+  catch(e) { alert('操作失败') }
+}
+async function deleteExtLink(id) {
+  if (!confirm('确定删除此外部分享链接？')) return
+  try { await api.delete(`/knowledge/share-links/${id}`); await loadExtLinks() }
+  catch(e) { alert('删除失败') }
+}
+
+function toggleSel(id){const i=selIds.value.indexOf(id);if(i>=0)selIds.value.splice(i,1);else selIds.value.push(id)}
+function toggleAll(e){if(e.target.checked)selIds.value=pagedDocs.value.map(d=>d.id);else selIds.value=[]}
+
+function doBatchOp(){
+  const op=batchOp.value;batchOp.value=''
+  if(op==='move'){showBatchMove.value=true;batchTarget.value='/';batchTargetSpace.value=''}
+  else if(op==='space'){showBatchSpace.value=true}
+  else if(op==='tag'){showBatchTag.value=true;batchTags.value='';tagAction.value='set'}
+  else if(op==='type'){const t=prompt('新分类:');if(t)applyBatchType(t)}
+  else if(op==='delete'){if(confirm('删除 '+selIds.value.length+' 篇？'))applyBatchDelete()}
+}
+async function confirmBatchMove(){
+  if(!batchTarget.value||!selIds.value.length)return
+  const count=selIds.value.length
+  try{
+    const r=await api.post('/knowledge/documents/batch-move',{doc_ids:selIds.value,folder:batchTarget.value,space:batchTargetSpace.value})
+    selIds.value=[];showBatchMove.value=false;loadDocs();loadTree()
+    alert('已移动 '+(r.data?.moved||count)+' 篇文档')
+  }catch(e){alert('移动失败: '+(e?.response?.data?.detail||e.message))}
+}
+async function confirmBatchTag(){
+  if(!selIds.value.length)return
+  const tags=batchTags.value.split(',').map(t=>t.trim()).filter(Boolean)
+  await api.post('/knowledge/documents/batch-tag',{ids:selIds.value,tags,action:tagAction.value})
+  selIds.value=[];showBatchTag.value=false;loadDocs()
+}
+async function applyBatchType(t){await api.post('/knowledge/documents/batch-type',{ids:selIds.value,doc_type:t});selIds.value=[];loadDocs()}
+async function applyBatchDelete(){await api.post('/knowledge/documents/batch-delete',{ids:selIds.value});selIds.value=[];loadDocs()}
+function startMoveFolderSpace(f){
+  folderSpaceSrc.value=f;folderSpaceTarget.value=spaces.value[0]?.id||'default';showFolderSpaceDlg.value=true
+}
+async function confirmFolderSpace(){
+  if(!folderSpaceSrc.value||!folderSpaceTarget.value)return
+  const dp=_stripSpacePrefix(folderSpaceSrc.value.path)
+  try{
+    const r=await api.post('/knowledge/folders/move-to-space',{folder:dp,space:folderSpaceTarget.value})
+    showFolderSpaceDlg.value=false;loadDocs();loadTree()
+    alert('已转移 '+r.data?.moved+' 篇文档')
+  }catch(e){alert('转移失败: '+(e?.response?.data?.detail||e.message))}
+}
+async function confirmBatchSpace(){
+  if(!batchTargetSpace.value||!selIds.value.length)return
+  const count=selIds.value.length
+  try{
+    await api.post('/knowledge/documents/batch-move',{doc_ids:selIds.value,folder:'/',space:batchTargetSpace.value})
+    selIds.value=[];showBatchSpace.value=false;loadDocs()
+    alert('已变更 '+count+' 篇文档')
+  }catch(e){alert('变更空间失败')}
+}
+
+async function openPreview(d){
+  previewDoc.value=d;previewHtml.value='';showPreview.value=true
+  if(!d.file_path)return
+  const fp=(d.file_path||'').toLowerCase()
+  const fn=(d.filename||d.title||d.name||'').toLowerCase()
+  if(/\.(jpg|jpeg|png|gif|webp|bmp|svg)$/i.test(fp)||/\.(jpg|jpeg|png|gif|webp|bmp|svg)$/i.test(fn)){
+    // Images: direct img tag via download endpoint
+    previewLoading.value=false
+    const tok=localStorage.getItem('access_token')||''
+    const url='/api/knowledge/download/'+d.id+'?inline=1&token='+encodeURIComponent(tok)
+    previewHtml.value='<html><body style="margin:0;display:flex;justify-content:center;align-items:center;min-height:100vh;background:#f0f0f0"><img src="'+url+'" style="max-width:100%;max-height:95vh;object-fit:contain"/></body></html>'
+  }else{
+    await loadPreview()
+  }
+}
+function closePreview(){showPreview.value=false;previewHtml.value='';previewDoc.value=null}
+function onKeydown(e){if(e.key==='Escape'){if(showPreview.value)closePreview();else if(showEdit.value)showEdit.value=false;else if(showImport.value)showImport.value=false}}
+async function loadPreview(){if(!previewDoc.value?.id)return;previewLoading.value=true;try{const r=await api.get('/knowledge/preview-file/'+previewDoc.value.id,{responseType:'text'});previewHtml.value=r.data||r}catch{previewHtml.value='<p>预览加载失败</p>'}finally{previewLoading.value=false}}
+
+function startEdit(d){Object.assign(editForm,{...d,tagsStr:(d.tags||[]).join(', ')});showEdit.value=true}
+async function saveEdit(){
+  if(!editForm.id)return;saving.value=true
+  try{const tags=editForm.tagsStr.split(',').map(t=>t.trim()).filter(Boolean);await api.put('/knowledge/documents/'+editForm.id,{title:editForm.title,doc_type:editForm.doc_type,folder:editForm.folder,tags});showEdit.value=false;loadDocs();loadTree()}catch(e){alert('保存失败')}
+  finally{saving.value=false}
+}
+
+function openImport(){
+  importTab.value='file';importFiles.value=[];importFolderFiles.value=[];importFolderName.value='';
+  importTargetFolder.value='';importUrl.value='';importing.value=false;importProgress.value=0;showImport.value=true
+}
+function onPickFiles(e){importFiles.value=[...e.target.files]}
+function onDropFiles(e){importFiles.value=[...e.dataTransfer.files]}
+function onPickFolder(e){
+  const files=[...e.target.files]
+  importFolderFiles.value=files
+  if(files.length>0){
+    const rp=files[0].webkitRelativePath||files[0].name
+    importFolderName.value=rp.split('/')[0]||'文件夹'
+  }
+}
+function fmtSize(b){return b<1024?b+'B':b<1024*1024?(b/1024).toFixed(1)+'KB':(b/1024/1024).toFixed(1)+'MB'}
+async function doImportFiles(){
+  const allFiles = importTab.value==='file' ? importFiles.value : importFolderFiles.value
+  if(!allFiles.length)return
+  importing.value=true;importProgress.value=0
+  try{
+    const fd=new FormData()
+    allFiles.forEach(f=>fd.append('files',f))
+    fd.append('folder',importTargetFolder.value||'/')
+    fd.append('space',importSpace.value||'default')
+    fd.append('visibility',importVisibility.value||'shared')
+    fd.append('category','项目类')
+    // Per-file folder paths for folder imports
+    if(importTab.value==='folder'){
+      const paths=importFolderFiles.value.map(f=>{
+        const rp=f.webkitRelativePath||f.name
+        const parts=rp.split('/');parts.pop()
+        const base=importTargetFolder.value||''
+        return parts.length>0 ? (base?base+'/'+parts.join('/'):parts.join('/')) : (base||'/')
+      })
+      fd.append('folder_paths',JSON.stringify(paths))
+    }
+    await api.post('/knowledge/upload-batch',fd,{headers:{'Content-Type':'multipart/form-data'},
+      onUploadProgress(e){if(e.total)importProgress.value=Math.round(e.loaded/e.total*100)}
+    })
+    showImport.value=false;loadDocs();loadTree()
+  }catch(e){alert('上传失败: '+(e?.response?.data?.detail||e.message))}
+  finally{importing.value=false;importProgress.value=0}
+}
+async function doImportUrl(){
+  if(!importUrl.value)return;importing.value=true
+  try{await api.post('/knowledge/quick-import',{url:importUrl.value,folder:importTargetFolder.value||'/',space:curSpace.value});showImport.value=false;loadDocs()}catch(e){alert('导入失败')}
+  finally{importing.value=false}
+}
+
+async function delDoc(id){if(!confirm('确认删除？'))return;await api.delete('/knowledge/documents/'+id);loadDocs()}
+function _encPath(p){return encodeURIComponent(p.replace(/^\//,''))}
+// Strip space prefix from tree path to get DB-compatible path
+function _stripSpacePrefix(p) { const parts = (p||'/').split('/'); if (parts.length>=3 && parts[1] && !parts[1].match(/^\d/)) return '/'+parts.slice(2).join('/'); return p || '/' }
+
+async function startRenameFolder(f){const p=_stripSpacePrefix(f.path);const n=prompt('重命名文件夹:',f.name);if(n&&n!==f.name){await api.put('/knowledge/folders/'+_encPath(p),{name:n});loadTree();loadDocs()}}
+function startMoveFolder(f){folderMoveSrc.value=f;folderMoveTarget.value='/';showFolderMoveDlg.value=true}
+async function deleteFolder(f){
+  if(!confirm('删除文件夹「'+f.name+'」及其子文件夹？文件夹内的文档将一并删除！')) return
+  try{
+    const url='/knowledge/folders/'+_encPath(f.path)
+    const r=await api.delete(url)
+    await loadTree();await loadDocs()
+    const n=(r.data||{}).docs_deleted
+    alert(n!=null?(n>0?'已删除文件夹，共清理 '+n+' 篇文档':'未找到文档（夹内无文件或路径不匹配）'):'已删除文件夹')
+  }catch(e){alert('删除失败: '+((e.response||{}).data||{}).detail||e.message)}
+function openSpaceDlg(){Object.assign(spaceForm,{name:'',desc:'',is_public:false});showSpaceDlg.value=true}
+async function saveSpace(){try{if(spaceForm.id)await api.put('/knowledge/spaces/'+spaceForm.id,spaceForm);else await api.post('/knowledge/spaces',spaceForm);showSpaceDlg.value=false;loadSpaces()}catch(e){alert('保存失败')}}
+async function openImportSettings(){
+  try{const r=await api.get('/knowledge/config');const folders=r.data?.auto_import_folders;if(folders){Object.assign(importSettings,folders)}}catch{}
+  showImportSettings.value=true
+}
+async function saveImportSettings(){
+  try{await api.put('/knowledge/config',{auto_import_folders:{...importSettings}});showImportSettings.value=false}catch(e){alert('保存失败')}
+}
+async function askAI(){
+  if(!aiQuestion.value.trim())return
+  aiLoading.value=true;aiAnswer.value='';aiSources.value=[]
+  try{
+    const r=await api.post('/knowledge/qa',{question:aiQuestion.value,space:curSpace.value})
+    aiAnswer.value=r.data?.answer||'未找到答案'
+    aiSources.value=r.data?.sources||[]
+  }catch(e){aiAnswer.value='AI问答失败，请检查AI配置'}
+  aiLoading.value=false
+}
+async function doAiSearch(){
+  if(!aiSearchQ.value.trim())return
+  aiSearching.value=true;aiSearchResults.value=[]
+  try{
+    const r=await api.post('/knowledge/vector-search',{question:aiSearchQ.value,top_k:parseInt(aiSearchTopK.value)})
+    aiSearchResults.value=r.data?.results||[]
+  }catch(e){alert('搜索失败')}
+  aiSearching.value=false
+}
+async function doAiGen(mode){
+  aiGenLoading.value=true;aiGenMode.value=mode;aiGenResult.value=''
+  try{
+    const body={doc_ids:aiGenDocIds.value, requirement:aiGenRequirement.value, title:aiGenTitle.value}
+    let r
+    if(mode==='report'){
+      r=await api.post('/knowledge/report',body);aiGenResult.value=r.data?.report||'生成失败'
+    }else if(mode==='summarize'){
+      body.mode='detailed';r=await api.post('/knowledge/summarize',body);aiGenResult.value=r.data?.summary||'生成失败'
+    }else if(mode==='keypoints'){
+      r=await api.post('/knowledge/extract-points',body)
+      const pts=r.data?.points||[];aiGenResult.value=pts.length?pts.map((p,i)=>`${i+1}. ${p}`).join('\n'):'未提取到关键点'
+    }
+  }catch(e){aiGenResult.value='生成失败';alert('AI生成失败: '+(e?.response?.data?.detail||e.message))}
+  aiGenLoading.value=false
+}
+function openCtxMenu(e,f){ctxMenu.x=e.clientX;ctxMenu.y=e.clientY;ctxMenu.folder=f;ctxMenu.show=true}
+function previewDocById(r){window.open('/knowledge?doc='+r.id,'_blank')}
+async function confirmFolderMove(){
+  if(!folderMoveSrc.value){return}
+  let target = folderMoveTarget.value||'/'
+  if(!target){return}
+  // Strip space prefix from paths (tree uses /default/xxx, DB uses /xxx)
+  let srcPath = folderMoveSrc.value.path || '/'
+  const stripSpace = (p) => { const parts = p.split('/'); if (parts.length>=3 && parts[1] && !parts[1].match(/^\d/)) return '/'+parts.slice(2).join('/'); return p }
+  srcPath = stripSpace(srcPath)
+  target = stripSpace(target)
+  try{
+    const r=await api.post('/knowledge/folders/move',{path:srcPath,target})
+    const updated=r.data?.docs_updated
+    showFolderMoveDlg.value=false
+    loadTree();loadDocs()
+    alert(updated!=null?'已移动 '+updated+' 篇文档':'OK')
+  }catch(e){alert('移动失败: '+(e?.response?.data?.detail||e.message))}
+}
+
+function typeLabel(dt){
+  if(!dt)return'其他'
+  // Project phase codes -- show with phase prefix
+  const pmap={
+    p0_contract:'合同/协议',p0_requirement:'需求书',p0_report:'立项报告',
+    pp1_model:'模型',pp1_design:'设计报告',pp1_drawing:'图纸',pp1_testplan:'测试方案',
+    pp2_report:'样机报告',pp2_testdata:'测试数据',pp2_improve:'改进计划',
+    pp3_report:'验证报告',pp4_final:'定型文件'
+  }
+  if(pmap[dt]){
+    const phase=dt.startsWith('pp1_')?'PP1 ':dt.startsWith('pp2_')?'PP2 ':dt.startsWith('pp3_')?'PP3 ':dt.startsWith('pp4_')?'PP4 ':dt.startsWith('p0_')?'P0 ':''
+    return phase+pmap[dt]
+  }
+  // KB categories -- show as-is
+  return dt
+}
+function fileIcon(d){
+  // Check actual file path first (has real extension), then name, then title
+  const fp=(d.file_path||'').toLowerCase()
+  const n=(d.filename||d.title||d.name||'').toLowerCase()
+  const check=(s)=>{
+    if(s.endsWith('.pdf'))return 1
+    if(s.match(/\.(docx?|doc)$/))return 1
+    if(s.match(/\.(xlsx?|xls|csv)$/))return 1
+    if(s.match(/\.(pptx?|ppt)$/))return 1
+    if(s.match(/\.(png|jpe?g|gif|webp|svg|bmp|tiff?)$/))return 1
+    if(s.match(/\.(dwg|dxf|step|stp|igs|stl|catpart|sldprt|ipt)$/))return 1
+    if(s.match(/\.(zip|rar|7z|tar|gz)$/))return 1
+    if(s.match(/\.(py|js|ts|json|xml|html|css|sql|sh|bat|java|go|cpp|c|h)$/))return 1
+    return 0
+  }
+  if(check(fp)||check(n)){
+    const s=check(fp)?fp:n
+    if(s.endsWith('.pdf'))return'PDF'
+    if(s.match(/\.(docx?|doc)$/))return'DOC'
+    if(s.match(/\.(xlsx?|xls)$/))return'XLS'
+    if(s.endsWith('.csv'))return'CSV'
+    if(s.match(/\.(pptx?|ppt)$/))return'PPT'
+    if(s.match(/\.(png|jpe?g|gif|webp|svg|bmp|tiff?)$/))return'IMG'
+    if(s.match(/\.(dwg|dxf|step|stp|igs|stl|catpart|sldprt|ipt)$/))return'CAD'
+    if(s.match(/\.(zip|rar|7z|tar|gz)$/))return'ZIP'
+    if(s.match(/\.(py|js|ts|json|xml|html|css|sql|sh|bat|java|go|cpp|c|h)$/))return'CODE'
+  }
+  const ext=n.split('.').pop()
+  return ext&&ext.length<=5?ext.toUpperCase():'FILE'
+}
+
+onMounted(async()=>{await loadSpaces();await loadTree();await loadDocs();document.addEventListener('keydown',onKeydown)})
+</script>
+
+<style scoped>
+/* Reset */
+*{box-sizing:border-box;margin:0;padding:0}
+.fs-page{display:flex;height:100%;background:#f5f6f7;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:14px;color:#1f2329}
+
+/* Sidebar */
+.fs-sidebar{width:260px;background:#fff;border-right:1px solid #e5e6e8;display:flex;flex-direction:column;flex-shrink:0}
+.fs-sidebar-header{padding:16px 16px 12px}
+.fs-space-selector{margin-bottom:8px}
+.fs-space-select{width:100%;padding:6px 10px;border:1px solid #e5e6e8;border-radius:6px;font-size:13px;outline:none;background:#fff;cursor:pointer}
+.fs-space-select:focus{border-color:#3370ff}
+.fs-space-name{font-size:14px;font-weight:600;padding:4px 0}
+.fs-mode-tabs{display:flex;background:#f2f3f5;border-radius:6px;padding:2px}
+.fs-mode-tabs button{flex:1;border:none;background:none;padding:5px 0;border-radius:4px;cursor:pointer;font-size:12px;color:#646a73}
+.fs-mode-tabs button.on{background:#fff;color:#1f2329;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.fs-sidebar-actions{padding:0 16px 12px}
+.fs-btn-new{display:flex;align-items:center;justify-content:center;gap:4px;width:100%;padding:8px 0;border:none;border-radius:6px;background:#3370ff;color:#fff;font-size:13px;cursor:pointer;font-weight:500}
+.fs-btn-new:hover{background:#2860e1}
+.fs-btn-new-icon{font-size:18px;line-height:1}
+
+.fs-folder-section{flex:1;overflow-y:auto;border-top:1px solid #f2f3f5;padding-top:8px}
+.fs-folder-title{display:flex;align-items:center;gap:4px;padding:6px 16px;font-size:12px;font-weight:600;color:#8f959e;cursor:pointer;user-select:none}
+.fs-folder-arrow{font-size:12px;transition:transform .15s}
+.fs-folder-add{margin-left:auto;border:none;background:none;color:#3370ff;cursor:pointer;font-size:16px;padding:0 4px}
+.fs-folder-list{padding:2px 0}
+.fs-folder-item{display:flex;align-items:center;gap:4px;padding:4px 8px;cursor:pointer;font-size:13px;color:#1f2329;transition:background .1s;line-height:1.8}
+.fs-folder-item:hover{background:#f2f3f5}
+.fs-folder-item.active{background:#e8f0fe;color:#3370ff}
+.fs-folder-item .fs-fname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
+.fs-folder-actions{display:flex;gap:1px;flex-shrink:0;opacity:0;transition:opacity .15s}
+.fs-folder-item:hover .fs-folder-actions{opacity:1}
+.fs-folder-act-btn{background:none;border:none;cursor:pointer;font-size:12px;padding:2px 4px;color:#8f959e;border-radius:3px;line-height:1}
+.fs-folder-act-btn:hover{color:#3370ff;background:#e8f0fe}
+.fs-folder-del-btn{color:#f54a45}
+.fs-folder-del-btn:hover{color:#d93025!important;background:#fef0f0!important}
+.fs-folder-item:hover{background:#f2f3f5}
+.fs-folder-item.active{background:#e8f0fe;color:#3370ff}
+.fs-folder-icon{font-size:14px;width:18px;text-align:center;flex-shrink:0}
+.fs-folder-arrow-sm{font-size:10px;width:12px;text-align:center;flex-shrink:0;color:#646a73}
+.fs-folder-badge{margin-left:auto;font-size:11px;color:#646a73;background:#f2f3f5;padding:0 6px;border-radius:8px}
+.fs-folder-act-btn{background:none;border:none;cursor:pointer;font-size:11px;padding:0 2px;color:#8f959e;border-radius:2px}
+.fs-folder-act-btn:hover{color:#3370ff;background:#e8f0fe}
+.fs-folders-ft{padding:8px 16px;border-top:1px solid #f2f3f5;margin-top:auto}
+.fs-sidebar-footer{padding:8px 16px;border-top:1px solid #f2f3f5}
+.fs-link-text{background:none;border:none;color:#3370ff;cursor:pointer;font-size:13px}
+.fs-link-text:hover{text-decoration:underline}
+
+/* Main */
+.fs-main{flex:1;display:flex;flex-direction:column;min-width:0;overflow:hidden}
+.fs-topbar{padding:16px 24px 8px;background:#f5f6f7}
+.fs-search-wrap{position:relative;margin-bottom:12px}
+.fs-search{width:100%;padding:10px 36px 10px 16px;border:1px solid #dee0e3;border-radius:8px;font-size:14px;outline:none;background:#fff;color:#1f2329}
+.fs-search::placeholder{color:#8f959e}
+.fs-search:focus{border-color:#3370ff;box-shadow:0 0 0 3px rgba(51,112,255,.1)}
+.fs-search-clear{position:absolute;right:12px;top:50%;transform:translateY(-50%);cursor:pointer;color:#646a73;font-size:18px;padding:0 4px}
+.fs-filter-row{display:flex;align-items:center;gap:8px}
+.fs-filter-select{padding:5px 10px;border:1px solid #dee0e3;border-radius:6px;font-size:13px;outline:none;background:#fff;cursor:pointer;color:#1f2329}
+.fs-count{font-size:13px;color:#646a73;margin-left:auto}
+.fs-view-btns{display:flex}
+.fs-view-btns button{border:1px solid #e5e6e8;background:#fff;padding:5px 10px;cursor:pointer;font-size:14px;color:#646a73}
+.fs-view-btns button:first-child{border-radius:4px 0 0 4px}
+.fs-view-btns button:last-child{border-radius:0 4px 4px 0}
+.fs-view-btns button.on{background:#3370ff;color:#fff;border-color:#3370ff}
+
+.fs-batch-bar{display:flex;align-items:center;gap:8px;padding:8px 24px;background:#e8f0fe;font-size:13px}
+
+.fs-doc-area{flex:1;overflow-y:auto;padding:0 24px 24px}
+.fs-doc-grid{display:grid;grid-template-columns:repeat(auto-fill, minmax(340px, 1fr));gap:12px;padding-top:12px}
+.fs-doc-card{display:flex;align-items:stretch;background:#fff;border:1px solid #e5e6e8;border-radius:8px;transition:all .15s}
+.fs-doc-card:hover{border-color:#3370ff;box-shadow:0 2px 12px rgba(51,112,255,.08)}
+.fs-card-left{display:flex;gap:14px;padding:16px;flex:1;min-width:0;cursor:pointer}
+.fs-card-right{display:flex;flex-direction:column;align-items:center;gap:2px;padding:12px 8px;border-left:1px solid #f2f3f5;justify-content:center;flex-shrink:0}
+.fs-card-check{cursor:pointer;width:16px;height:16px;margin-bottom:4px}
+.fs-card-btn{background:none;border:none;color:#3370ff;cursor:pointer;font-size:12px;padding:2px 4px;border-radius:4px;white-space:nowrap}
+.fs-card-btn:hover{background:#e8f0fe}
+.fs-card-icon{width:40px;height:40px;display:flex;align-items:center;justify-content:center;background:#e8f0fe;border-radius:6px;font-size:12px;font-weight:700;color:#3370ff;flex-shrink:0}
+.fs-card-icon-sm{font-size:11px;font-weight:600;color:#3370ff;margin-right:6px}
+.fs-card-body{flex:1;min-width:0}
+.fs-card-title{font-size:14px;font-weight:600;margin-bottom:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#1f2329;line-height:1.4}
+.fs-card-desc{font-size:13px;color:#646a73;line-height:1.5;margin-bottom:6px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.fs-card-meta{display:flex;gap:8px;font-size:12px;color:#8f959e;margin-bottom:6px}
+.fs-card-tags{display:flex;gap:4px;flex-wrap:wrap}
+.fs-tag{font-size:11px;padding:2px 8px;border-radius:3px;background:#e8f0fe;color:#3370ff}
+
+.fs-table{width:100%;border-collapse:collapse;background:#fff;border-radius:8px;overflow:hidden;margin-top:12px}
+.fs-table th{text-align:left;padding:10px 16px;font-size:13px;font-weight:600;color:#646a73;border-bottom:1px solid #e5e6e8;background:#fafafa}
+.fs-table td{padding:10px 16px;font-size:14px;color:#1f2329;border-bottom:1px solid #f2f3f5}
+.fs-tr{cursor:pointer}.fs-tr:hover{background:#f2f3f5}
+
+.fs-pager{display:flex;justify-content:center;gap:4px;padding:16px}
+.fs-pager button{border:1px solid #e5e6e8;background:#fff;padding:6px 12px;border-radius:4px;cursor:pointer;font-size:13px;color:#646a73}
+.fs-pager button.active{background:#3370ff;color:#fff;border-color:#3370ff}
+.fs-pager button:disabled{opacity:.3;cursor:default}
+
+.fs-empty{text-align:center;padding:80px 20px;color:#8f959e}
+.fs-empty-icon{font-size:48px;margin-bottom:16px}
+.fs-empty-title{font-size:16px;font-weight:600;color:#646a73;margin-bottom:8px}
+.fs-empty-desc{font-size:14px;color:#8f959e}
+
+/* Dialogs */
+.fs-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;z-index:1000}
+.fs-dialog{background:#fff;border-radius:12px;width:480px;max-height:85vh;display:flex;flex-direction:column;box-shadow:0 8px 40px rgba(0,0,0,.12)}
+.fs-dialog-header{display:flex;align-items:center;justify-content:space-between;padding:20px 24px 0}
+.fs-dialog-title{font-size:18px;font-weight:600}
+.fs-dialog-close{background:none;border:none;font-size:24px;cursor:pointer;color:#8f959e;padding:0;line-height:1}
+.fs-dialog-close:hover{color:#1f2329}
+.fs-dialog-body{padding:16px 24px 24px;overflow-y:auto;flex:1}
+.fs-dialog-footer{display:flex;justify-content:flex-end;gap:8px;padding:0 24px 20px}
+.fs-form-group{margin-bottom:16px}
+.fs-label{display:block;font-size:13px;font-weight:500;color:#1f2329;margin-bottom:6px}
+.fs-input{width:100%;padding:8px 12px;border:1px solid #dee0e3;border-radius:6px;font-size:14px;outline:none;color:#1f2329}
+.fs-input::placeholder{color:#8f959e}
+.fs-input:focus{border-color:#3370ff}
+.fs-btn-primary{padding:8px 20px;border:none;border-radius:6px;background:#3370ff;color:#fff;font-size:14px;cursor:pointer;font-weight:500}
+.fs-btn-primary:hover{background:#2860e1}
+.fs-btn-primary:disabled{opacity:.5;cursor:default}
+.fs-btn-secondary{padding:8px 20px;border:1px solid #e5e6e8;border-radius:6px;background:#fff;color:#1f2329;font-size:14px;cursor:pointer}
+.fs-btn-secondary:hover{background:#f2f3f5}
+.fs-dropzone{border:2px dashed #e5e6e8;border-radius:8px;padding:32px;text-align:center;cursor:pointer;color:#8f959e;transition:all .15s}
+.fs-dropzone:hover{border-color:#3370ff;background:#f5f6f7}
+.fs-dropzone-icon{font-size:28px;margin-bottom:8px;color:#3370ff}
+.fs-preview-iframe{width:100%;height:60vh;border:1px solid #e5e6e8;border-radius:6px;margin:12px 0}
+.fs-preview-img{text-align:center;max-height:70vh;overflow:auto;margin:12px 0}
+.fs-preview-img :deep(img){max-width:100%;max-height:70vh;object-fit:contain}
+.fs-preview-meta{display:flex;gap:12px;font-size:13px;color:#646a73;margin-bottom:12px}
+.fs-preview-content{max-height:50vh;overflow:auto;line-height:1.8;white-space:pre-wrap;background:#f5f6f7;padding:16px;border-radius:8px;font-size:14px;color:#1f2329}
+.fs-loading{text-align:center;padding:40px;color:#646a73}
+.fs-ai-topbtn{padding:6px 16px;border:2px solid #3370ff;border-radius:8px;background:linear-gradient(135deg,#f0f5ff,#e8f0fe);color:#3370ff;font-size:13px;font-weight:600;cursor:pointer;margin-left:auto;transition:all .2s;white-space:nowrap}
+.fs-ai-topbtn:hover{background:linear-gradient(135deg,#d8e4ff,#c8d8ff);border-color:#2860e1}
+.fs-ctxmenu{position:fixed;z-index:10000;background:#fff;border:1px solid #e5e6e8;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12);padding:4px 0;min-width:150px}
+.fs-ctxmenu-item{padding:7px 14px;font-size:13px;cursor:pointer;color:#1f2329}
+.fs-ctxmenu-item:hover{background:#f2f3f5}
+.fs-ctxmenu-divider{border-top:1px solid #e5e6e8;margin:4px 0}
+.fs-ctxmenu-danger{color:#f54a45}
+.fs-ctxmenu-danger:hover{background:#fef0f0}
+.fs-import-tabs{display:flex;border-bottom:2px solid #e5e6e8;margin-bottom:16px}
+.fs-import-tab{flex:1;padding:10px 0;text-align:center;border:none;background:none;color:#646a73;font-size:14px;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-2px;transition:all .15s}
+.fs-import-tab:hover{color:#3370ff}
+.fs-import-tab.active{color:#3370ff;border-bottom-color:#3370ff;font-weight:600}
+.fs-file-list{max-height:180px;overflow-y:auto;text-align:left}
+.fs-file-item{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:4px;font-size:13px;color:#1f2329}
+.fs-file-item:hover{background:#f2f3f5}
+.fs-file-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fs-file-size{color:#8f959e;font-size:12px;white-space:nowrap}
+.fs-file-remove{border:none;background:none;color:#f54a45;cursor:pointer;font-size:16px;padding:0 4px}
+.fs-file-remove:hover{color:#d93025}
+.fs-file-more{padding:6px 8px;color:#8f959e;font-size:12px;text-align:center}
+.fs-folder-info{display:flex;align-items:center;gap:12px;justify-content:center;margin-bottom:8px}
+.fs-folder-name{font-size:16px;font-weight:600;color:#1f2329}
+.fs-file-count{font-size:12px;color:#8f959e;background:#f2f3f5;padding:2px 8px;border-radius:10px}
+.fs-import-progress{display:flex;align-items:center;gap:12px;padding:8px 0}
+.fs-progress-bar{flex:1;height:6px;background:#e5e6e8;border-radius:3px;overflow:hidden}
+.fs-progress-fill{height:100%;background:#3370ff;border-radius:3px;transition:width .3s}
+</style>

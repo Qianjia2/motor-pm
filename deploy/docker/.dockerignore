@@ -1,0 +1,9 @@
+# 排除不需要进入构建上下文的内容
+data/
+uploads/
+src/backend_v2/**/__pycache__/
+src/backend_v2/**/*.pyc
+src/frontend/node_modules/
+src/frontend/dist/
+*.log
+.git/
