@@ -333,7 +333,7 @@ def build_internal_items(meta, recognized=None):
             items = items[:need]
         filled = [to_row(g, it) for it in items]
         if g == "半成品" and not items:
-            for ex in meta.get("example_rows") or []:
+            for ex in (meta.get("example_rows") or [])[:need]:
                 filled.append([g, "", ex.get("code", ""), ex.get("name", ""), ex.get("part_no", ""),
                                ex.get("spec", ""), ex.get("unit", "pcs") or "pcs", ex.get("qty", "1") or "1", ex.get("note", "")])
         for _ in range(max(0, need - len(filled))):
