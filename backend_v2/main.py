@@ -8,6 +8,7 @@ from datetime import datetime
 import json
 import traceback
 from backend_v2.config import settings
+from backend_v2.storage import atomic_write
 from backend_v2.database import init_db, engine
 from backend_v2.auth import get_current_user, require_admin, verify_token
 from fastapi import WebSocket, WebSocketDisconnect
@@ -100,9 +101,10 @@ def shutdown():
 
 
 # ── CORS ──
+# 只允许配置的 origin（禁止 "*"+credentials 组合；生产部署用 CORS_ORIGINS 环境变量指定前端地址）
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS + ["*"],
+    allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -140,15 +142,17 @@ async def websocket_endpoint(ws: WebSocket, resource_type: str, resource_id: str
     """Real-time collaboration WebSocket.
     resource_type: 'knowledge_doc', 'project_doc', 'note' etc.
     resource_id: document ID or key."""
-    # Auth via token query param
+    # Auth via token query param — 无有效 token 直接拒绝, 不再降级 guest
     token = ws.query_params.get("token", "")
-    user_info = {"username": "guest", "user_id": None}
-    if token:
-        try:
-            payload = verify_token(token)
-            user_info = {"username": payload.get("sub", "?"), "user_id": payload.get("user_id")}
-        except:
-            pass
+    if not token:
+        await ws.close(code=4401, reason="需要登录")
+        return
+    try:
+        payload = verify_token(token)
+    except Exception:
+        await ws.close(code=4401, reason="登录无效")
+        return
+    user_info = {"username": payload.get("sub", "?"), "user_id": payload.get("user_id")}
 
     group = f"{resource_type}:{resource_id}"
     await ws_manager.connect(ws, group, user_info)
@@ -231,8 +235,8 @@ def tunnel_status():
             "url": _tunnel_url}
 
 @app.post("/api/tunnel/start")
-def tunnel_start():
-    """Start ngrok tunnel for external access."""
+def tunnel_start(_admin=Depends(require_admin)):
+    """Start ngrok tunnel for external access (admin only — exposes server publicly)."""
     global _tunnel_process, _tunnel_url
     import subprocess, threading, re, os, urllib.request, json as _json
     if _tunnel_process and _tunnel_process.poll() is None:
@@ -273,7 +277,7 @@ def tunnel_start():
     return {"ok": False, "url": "", "msg": "ngrok启动超时，请检查网络"}
 
 @app.post("/api/tunnel/stop")
-def tunnel_stop():
+def tunnel_stop(_admin=Depends(require_admin)):
     """Stop the tunnel."""
     global _tunnel_process, _tunnel_url
     if _tunnel_process:
@@ -507,9 +511,7 @@ def _load_dt_approvals():
         return []
 
 def _save_dt_approvals(items):
-    _DT_DATA.parent.mkdir(parents=True, exist_ok=True)
-    with open(_DT_DATA, "w", encoding="utf-8") as f:
-        _json.dump(items, f, ensure_ascii=False, indent=2)
+    atomic_write(str(_DT_DATA), items)
 
 @app.get("/api/projects/{project_id}/dingtalk-approvals")
 def list_dt_approvals(project_id: int, current_user=Depends(get_current_user)):
@@ -753,7 +755,7 @@ def _log_share_visit(token: str, name: str, question: str, answer: str, ip: str)
     })
     # Keep last 2000 records
     if len(visits) > 2000: visits = visits[-2000:]
-    with open(log_file, "w", encoding="utf-8") as f: json.dump(visits, f, ensure_ascii=False, indent=2)
+    atomic_write(log_file, visits)
 
 @app.get("/api/knowledge/share-links/{share_id}/visits")
 def get_share_visits(share_id: str, limit: int = 50):
@@ -790,10 +792,21 @@ def public_chat_page(token: str):
 static_dir = Path(__file__).parent.parent / "frontend" / "dist"
 if static_dir.exists():
     # Mount uploads for requirement attachments etc.
+    # 自定义 StaticFiles: 统一加 nosniff; 危险类型(html/svg/xml)强制附件下载, 防同源存储型 XSS
+    class SafeStaticFiles(StaticFiles):
+        async def get_response(self, path: str, scope):
+            response = await super().get_response(path, scope)
+            if response.status_code < 400:
+                response.headers["X-Content-Type-Options"] = "nosniff"
+                ext = Path(path).suffix.lower()
+                if ext in (".html", ".htm", ".svg", ".xml"):
+                    response.headers["Content-Disposition"] = "attachment"
+            return response
+
     import backend_v2.config as _cfg
     uploads_dir = Path(_cfg.settings.UPLOAD_DIR)
     if uploads_dir.exists():
-        app.mount("/uploads", StaticFiles(directory=str(uploads_dir)), name="uploads")
+        app.mount("/uploads", SafeStaticFiles(directory=str(uploads_dir)), name="uploads")
     # Mount assets first (JS, CSS, images etc.)
     app.mount("/assets", StaticFiles(directory=str(static_dir / "assets")), name="assets")
 

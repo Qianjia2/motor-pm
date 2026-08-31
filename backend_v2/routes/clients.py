@@ -210,7 +210,7 @@ def update_client(client_id: int, data: ClientUpdate, db: Session = Depends(get_
 
 
 @router.delete("/{client_id}")
-def delete_client(client_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+def delete_client(client_id: int, db: Session = Depends(get_db), current_user=Depends(require_admin)):
     c = (db.execute(select(Client).where(Client.id == client_id))).scalar_one_or_none()
     if not c:
         raise HTTPException(status_code=404, detail="不存在")

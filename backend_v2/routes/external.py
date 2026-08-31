@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Header, Query, Request
 from sqlalchemy import select, update, delete, func
 from sqlalchemy.orm import Session, selectinload
 from backend_v2.database import get_db
-from backend_v2.auth import get_current_user
+from backend_v2.auth import get_current_user, require_admin
 from backend_v2.models import ApiKey, WebhookConfig, Project, Milestone, RiskIssue
 
 router = APIRouter(tags=["external"])
@@ -38,7 +38,7 @@ def verify_api_key(x_api_key: str = Header(None), db: Session = Depends(get_db))
 # ═══════════════════════════════════════════
 
 @router.get("/api/admin/api-keys")
-def list_api_keys(db: Session = Depends(get_db), _user=Depends(get_current_user)):
+def list_api_keys(db: Session = Depends(get_db), _user=Depends(require_admin)):
     result = db.execute(select(ApiKey).order_by(ApiKey.created_at.desc()))
     return [{"id": k.id, "name": k.name, "key_prefix": k.key_prefix, "permissions": k.permissions,
              "is_active": k.is_active, "created_by": k.created_by, "created_at": k.created_at.isoformat() if k.created_at else None,
@@ -49,7 +49,7 @@ def list_api_keys(db: Session = Depends(get_db), _user=Depends(get_current_user)
 
 @router.post("/api/admin/api-keys", status_code=201)
 def create_api_key(
-    data: dict, db: Session = Depends(get_db), user=Depends(get_current_user),
+    data: dict, db: Session = Depends(get_db), user=Depends(require_admin),
 ):
     """Generate a new API key. Returns the full key ONCE — save it immediately."""
     raw_key = "pm_" + secrets.token_urlsafe(32)
@@ -72,7 +72,7 @@ def create_api_key(
 
 
 @router.put("/api/admin/api-keys/{key_id}")
-def update_api_key(key_id: int, data: dict, db: Session = Depends(get_db), _user=Depends(get_current_user)):
+def update_api_key(key_id: int, data: dict, db: Session = Depends(get_db), _user=Depends(require_admin)):
     db.execute(update(ApiKey).where(ApiKey.id == key_id).values(
         name=data.get("name"), is_active=data.get("is_active"), permissions=data.get("permissions"),
     ))
@@ -81,7 +81,7 @@ def update_api_key(key_id: int, data: dict, db: Session = Depends(get_db), _user
 
 
 @router.delete("/api/admin/api-keys/{key_id}")
-def revoke_api_key(key_id: int, db: Session = Depends(get_db), _user=Depends(get_current_user)):
+def revoke_api_key(key_id: int, db: Session = Depends(get_db), _user=Depends(require_admin)):
     db.execute(update(ApiKey).where(ApiKey.id == key_id).values(is_active=False))
     db.commit()
     return {"message": "已吊销"}
@@ -92,7 +92,7 @@ def revoke_api_key(key_id: int, db: Session = Depends(get_db), _user=Depends(get
 # ═══════════════════════════════════════════
 
 @router.get("/api/admin/webhooks")
-def list_webhooks(db: Session = Depends(get_db), _user=Depends(get_current_user)):
+def list_webhooks(db: Session = Depends(get_db), _user=Depends(require_admin)):
     result = db.execute(select(WebhookConfig).order_by(WebhookConfig.created_at.desc()))
     return [{"id": w.id, "name": w.name, "url": w.url, "events": w.events, "is_active": w.is_active,
              "created_at": w.created_at.isoformat() if w.created_at else None,
@@ -102,7 +102,7 @@ def list_webhooks(db: Session = Depends(get_db), _user=Depends(get_current_user)
 
 
 @router.post("/api/admin/webhooks", status_code=201)
-def create_webhook(data: dict, db: Session = Depends(get_db), _user=Depends(get_current_user)):
+def create_webhook(data: dict, db: Session = Depends(get_db), _user=Depends(require_admin)):
     w = WebhookConfig(
         name=data.get("name", "Webhook"),
         url=data["url"],
@@ -116,7 +116,7 @@ def create_webhook(data: dict, db: Session = Depends(get_db), _user=Depends(get_
 
 
 @router.put("/api/admin/webhooks/{webhook_id}")
-def update_webhook(webhook_id: int, data: dict, db: Session = Depends(get_db), _user=Depends(get_current_user)):
+def update_webhook(webhook_id: int, data: dict, db: Session = Depends(get_db), _user=Depends(require_admin)):
     upd = {k: v for k, v in data.items() if k in ("name", "url", "secret", "events", "is_active")}
     if upd:
         db.execute(update(WebhookConfig).where(WebhookConfig.id == webhook_id).values(**upd))
@@ -125,14 +125,14 @@ def update_webhook(webhook_id: int, data: dict, db: Session = Depends(get_db), _
 
 
 @router.delete("/api/admin/webhooks/{webhook_id}")
-def delete_webhook(webhook_id: int, db: Session = Depends(get_db), _user=Depends(get_current_user)):
+def delete_webhook(webhook_id: int, db: Session = Depends(get_db), _user=Depends(require_admin)):
     db.execute(delete(WebhookConfig).where(WebhookConfig.id == webhook_id))
     db.commit()
     return {"message": "已删除"}
 
 
 @router.post("/api/admin/webhooks/{webhook_id}/test")
-def test_webhook(webhook_id: int, db: Session = Depends(get_db), _user=Depends(get_current_user)):
+def test_webhook(webhook_id: int, db: Session = Depends(get_db), _user=Depends(require_admin)):
     """Send a test ping to the webhook URL."""
     import aiohttp
     result = db.execute(select(WebhookConfig).where(WebhookConfig.id == webhook_id))

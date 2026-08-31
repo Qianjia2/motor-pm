@@ -1,8 +1,9 @@
 """Authentication routes — login, register, refresh, logout."""
 import json
 import secrets as _secrets
+import time as _time
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 from backend_v2.database import get_db
@@ -15,21 +16,46 @@ from backend_v2.permissions import (
 )
 from backend_v2.schemas import LoginRequest, RegisterRequest, TokenResponse
 from backend_v2.models import Department, PermissionRole, UserAuth
+from backend_v2.config import settings
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
+# ── Login rate limiting (in-memory sliding window, per IP+username) ──
+_attempts: dict[str, list[float]] = {}
+
+
+def _record_failure(key: str):
+    now = _time.time()
+    lst = _attempts.setdefault(key, [])
+    lst[:] = [t for t in lst if now - t < settings.LOGIN_RATE_WINDOW]
+    lst.append(now)
+
+
+def _check_rate_limit(key: str):
+    now = _time.time()
+    lst = _attempts.get(key, [])
+    lst[:] = [t for t in lst if now - t < settings.LOGIN_RATE_WINDOW]
+    if len(lst) >= settings.LOGIN_RATE_LIMIT:
+        raise HTTPException(status_code=429, detail=f"尝试次数过多，请 {settings.LOGIN_RATE_WINDOW // 60} 分钟后再试")
+
 
 @router.post("/login", response_model=TokenResponse)
-def login(data: LoginRequest, db: Session = Depends(get_db)):
+def login(data: LoginRequest, request: Request, db: Session = Depends(get_db)):
+    client_ip = request.client.host if request and request.client else "unknown"
+    key = f"{client_ip}:{data.username}"
+    _check_rate_limit(key)
     result = db.execute(
         select(UserAuth).where(UserAuth.username == data.username)
     )
     user = result.scalar_one_or_none()
     if not user or not user.is_active:
+        _record_failure(key)
         raise HTTPException(status_code=401, detail="用户名或密码错误")
     if not verify_password(data.password, user.password_hash):
+        _record_failure(key)
         raise HTTPException(status_code=401, detail="用户名或密码错误")
 
+    _attempts.pop(key, None)  # 成功后清空失败计数
     access_token = create_access_token(user.username, user.id, user.role, user.member_id)
     refresh_token = create_refresh_token(user.username, user.id)
 
@@ -50,6 +76,8 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
 
 @router.post("/register")
 def register(data: RegisterRequest, db: Session = Depends(get_db)):
+    if not settings.REGISTER_OPEN:
+        raise HTTPException(status_code=403, detail="注册已关闭，请联系管理员创建账号")
     existing = db.execute(select(UserAuth).where(UserAuth.username == data.username))
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="用户名已存在")
@@ -104,10 +132,13 @@ def me(current_user=Depends(get_current_user)):
 
 @router.put("/password")
 def change_password(
-    old_password: str, new_password: str,
+    data: dict,
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    """改密参数走 body（query 参数会进访问日志，泄露密码）。"""
+    old_password = (data or {}).get("old_password", "")
+    new_password = (data or {}).get("new_password", "")
     if not verify_password(old_password, current_user.password_hash):
         raise HTTPException(status_code=400, detail="原密码错误")
     if len(new_password) < 3:

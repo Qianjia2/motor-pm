@@ -732,8 +732,10 @@ async def bom_from_drawing(file: UploadFile = File(...), _user=Depends(get_curre
                     it["position"] = ""
         return {"items": items, "raw_answer": answer[:800]}
     except Exception as e:
-        import traceback
-        return {"items": [], "error": str(e)[:100], "raw_answer": answer[:500], "trace": traceback.format_exc()[-300:]}
+        # 不向客户端返回堆栈（信息泄露），完整堆栈走日志
+        import logging
+        logging.getLogger("bom").exception("识别物料解析失败")
+        return {"items": [], "error": str(e)[:100], "raw_answer": answer[:500]}
 
 
 # ── Convert hardware tool BOM → template format ──

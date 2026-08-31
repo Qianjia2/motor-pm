@@ -25,7 +25,7 @@ from pptx import Presentation
 from pptx.util import Inches, Pt as Pt2
 
 from backend_v2.database import get_db
-from backend_v2.auth import get_current_user
+from backend_v2.auth import get_current_user, require_admin
 from backend_v2.config import settings
 from backend_v2.models import (
     Project, Milestone, WeeklyReport, RiskIssue, ChangeRequest,
@@ -317,6 +317,19 @@ def _template_report(prompt: str) -> str:
 {prompt[:3000]}
 ```
 """
+
+
+FILLED_TEMPLATE_RETENTION = 200  # 最多保留最新 200 个已填充模板，防 NAS 目录无限增长
+
+
+def _prune_filled_templates(upload_dir):
+    """删除最旧的填充模板，仅保留最新 FILLED_TEMPLATE_RETENTION 个。"""
+    files = sorted(upload_dir.glob("*.docx"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for old in files[FILLED_TEMPLATE_RETENTION:]:
+        try:
+            old.unlink()
+        except Exception:
+            pass
 
 
 # Report type → template filename keywords for auto-matching
@@ -758,16 +771,21 @@ async def fill_template(
     file: UploadFile = File(...),
     token: str = Form(""),
     project_id: str = Form("0"),
+    request: Request = None,
     db: Session = Depends(get_db),
 ):
     """Upload a .docx template via form POST — AI fills it with project data."""
-    # Auth via form token
-    if token:
-        try:
-            from backend_v2.auth import verify_token
-            verify_token(token)
-        except Exception:
-            raise HTTPException(status_code=401, detail="登录已过期")
+    # Auth via form token（iframe 嵌入用）或 Authorization 头；两者都没有则拒绝
+    if not token:
+        auth = request.headers.get("Authorization", "") if request else ""
+        if not auth.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="需要登录")
+        token = auth[7:]
+    try:
+        from backend_v2.auth import verify_token
+        verify_token(token)
+    except Exception:
+        raise HTTPException(status_code=401, detail="登录已过期")
 
     pid = int(project_id) if project_id and project_id.isdigit() else 0
     content = await file.read()
@@ -864,6 +882,7 @@ async def fill_template(
     dest = upload_dir / safe_name
     with open(dest, "wb") as f:
         f.write(output.getvalue())
+    _prune_filled_templates(upload_dir)
 
     from fastapi.responses import FileResponse
     full_path = upload_dir / safe_name
@@ -1445,12 +1464,14 @@ def list_templates(_user=Depends(get_current_user)):
 @router.post("/api/report-gen/templates/upload", status_code=201)
 async def upload_template_to_library(
     file: UploadFile = File(...),
-    _user=Depends(get_current_user),
+    _user=Depends(require_admin),
 ):
     """Save a .docx template to the library for all projects."""
-    if not file.filename or not file.filename.endswith(".docx"):
+    from pathlib import Path as _Path
+    fname = _Path(file.filename or "").name
+    if not fname.endswith(".docx"):
         raise HTTPException(status_code=400, detail="仅支持 .docx 文件")
-    safe_name = file.filename
+    safe_name = fname
     dest = TEMPLATE_DIR / safe_name
     content = await file.read()
     if len(content) < 100:
@@ -1461,7 +1482,7 @@ async def upload_template_to_library(
 
 
 @router.delete("/api/report-gen/templates/{name}")
-def delete_template(name: str, _user=Depends(get_current_user)):
+def delete_template(name: str, _user=Depends(require_admin)):
     """Remove a template from the library."""
     f = TEMPLATE_DIR / (name + ".docx")
     if not f.exists():
@@ -1477,15 +1498,20 @@ async def fill_from_library(
     template_name: str = Form(...),
     project_id: str = Form("0"),
     token: str = Form(""),
+    request: Request = None,
     db: Session = Depends(get_db),
 ):
     """Fill a saved template with project data."""
-    if token:
-        try:
-            from backend_v2.auth import verify_token
-            verify_token(token)
-        except Exception:
-            raise HTTPException(status_code=401, detail="登录已过期")
+    if not token:
+        auth = request.headers.get("Authorization", "") if request else ""
+        if not auth.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="需要登录")
+        token = auth[7:]
+    try:
+        from backend_v2.auth import verify_token
+        verify_token(token)
+    except Exception:
+        raise HTTPException(status_code=401, detail="登录已过期")
 
     f = TEMPLATE_DIR / (template_name + ".docx")
     if not f.exists():
@@ -1594,6 +1620,7 @@ async def fill_from_library(
     dest = upload_dir / safe_name
     with open(dest, "wb") as fw:
         fw.write(output.getvalue())
+    _prune_filled_templates(upload_dir)
 
     return FileResponse(
         dest,

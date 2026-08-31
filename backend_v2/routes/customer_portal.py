@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 from backend_v2.database import get_db
-from backend_v2.auth import get_current_user
+from backend_v2.auth import require_admin
 from backend_v2.models import CustomerAccess, Project, Client, Milestone, Deliverable, ProjectDocument
 
 router = APIRouter(tags=["customer-portal"])
@@ -16,7 +16,7 @@ def _hash_pwd(pwd: str) -> str:
 
 
 @router.get("/api/admin/customer-access")
-def list_access(db: Session = Depends(get_db), _user=Depends(get_current_user)):
+def list_access(db: Session = Depends(get_db), _user=Depends(require_admin)):
     result = db.execute(
         select(CustomerAccess).where(CustomerAccess.is_active == True).order_by(CustomerAccess.created_at.desc())
     )
@@ -29,7 +29,7 @@ def list_access(db: Session = Depends(get_db), _user=Depends(get_current_user)):
 
 
 @router.post("/api/admin/customer-access", status_code=201)
-def create_access(data: dict, db: Session = Depends(get_db), _user=Depends(get_current_user)):
+def create_access(data: dict, db: Session = Depends(get_db), _user=Depends(require_admin)):
     """Grant customer access to a project. Returns share URL."""
     code = "CLI" + secrets.token_urlsafe(8)[:12].replace("-", "x").replace("_", "y")
     a = CustomerAccess(
@@ -45,7 +45,7 @@ def create_access(data: dict, db: Session = Depends(get_db), _user=Depends(get_c
 
 
 @router.delete("/api/admin/customer-access/{access_id}")
-def revoke_access(access_id: int, db: Session = Depends(get_db), _user=Depends(get_current_user)):
+def revoke_access(access_id: int, db: Session = Depends(get_db), _user=Depends(require_admin)):
     from sqlalchemy import update as up
     db.execute(up(CustomerAccess).where(CustomerAccess.id == access_id).values(is_active=False))
     db.commit()

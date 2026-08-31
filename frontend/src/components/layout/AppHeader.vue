@@ -179,7 +179,7 @@ async function doChangePwd() {
   if (pwdForm.new_password !== pwdConfirm.value) { ElMessage.warning('两次输入的新密码不一致'); return }
   pwdLoading.value = true
   try {
-    await api.put('/auth/password', null, { params: { old_password: pwdForm.old_password, new_password: pwdForm.new_password } })
+    await api.put('/auth/password', { old_password: pwdForm.old_password, new_password: pwdForm.new_password })
     ElMessage.success('密码已修改')
     showPwd.value = false
   } catch (e) {

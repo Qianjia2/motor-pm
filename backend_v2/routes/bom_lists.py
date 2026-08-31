@@ -4,9 +4,9 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form, Body
 from fastapi.responses import FileResponse
 from backend_v2.database import SessionLocal
-from backend_v2.auth import get_current_user
+from backend_v2.auth import get_current_user, require_admin
 from backend_v2.config import settings
-from backend_v2.storage import safe_load, safe_save
+from backend_v2.storage import safe_load, safe_save, atomic_write
 
 router = APIRouter(prefix="/api/bom-lists", tags=["bom-lists"])
 
@@ -68,8 +68,7 @@ def _load_internal_meta(tpl_id="default"):
 def _save_internal_meta(meta, tpl_id="default"):
     # 直接写多模板目录(不经 _tpl_meta_path 的旧文件回退, 避免 default 写回旧路径)
     d = _ensure_internal_tpl_dir()
-    with open(os.path.join(d, f"{tpl_id}.json"), "w", encoding="utf-8") as f:
-        json.dump(meta, f, ensure_ascii=False, indent=2)
+    atomic_write(os.path.join(d, f"{tpl_id}.json"), meta)
 
 
 def _gen_tpl_id():
@@ -429,7 +428,7 @@ def list_internal_templates(_user=Depends(get_current_user)):
 
 @router.post("/internal-templates")
 async def create_internal_template(file: UploadFile = File(...), name: str = Form(""),
-                                   _user=Depends(get_current_user)):
+                                   _user=Depends(require_admin)):
     """新增一套内部模板。"""
     content, meta = await _read_template_upload(file)
     tpl_id = _gen_tpl_id()
@@ -444,7 +443,7 @@ async def create_internal_template(file: UploadFile = File(...), name: str = For
 
 @router.post("/internal-template/{tpl_id}")
 async def replace_internal_template(tpl_id: str, file: UploadFile = File(...),
-                                    _user=Depends(get_current_user)):
+                                    _user=Depends(require_admin)):
     """替换指定内部模板(重新解析)。"""
     if not _load_internal_meta(tpl_id):
         raise HTTPException(404, detail="模板不存在")
@@ -457,7 +456,7 @@ async def replace_internal_template(tpl_id: str, file: UploadFile = File(...),
 
 
 @router.delete("/internal-templates/{tpl_id}")
-def delete_internal_template(tpl_id: str, _user=Depends(get_current_user)):
+def delete_internal_template(tpl_id: str, _user=Depends(require_admin)):
     """删除非默认内部模板。"""
     if tpl_id == "default":
         raise HTTPException(400, detail="默认模板不可删除")

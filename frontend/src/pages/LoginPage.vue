@@ -83,7 +83,7 @@ async function submit() {
     }
     router.replace('/my-work')
   } catch (e) {
-    ElMessage.error(e.response?.data?.error || '操作失败')
+    ElMessage.error(e.response?.data?.detail || e.response?.data?.error || '操作失败')
   } finally {
     loading.value = false
   }

@@ -68,6 +68,27 @@ def safe_save(filepath, data):
     return True
 
 
+def atomic_write(filepath, data, **kwargs):
+    """Write JSON atomically via temp file + os.replace.
+
+    进程在写文件中途被杀时, 主文件要么是旧内容要么是新内容, 绝不会是半截 JSON。
+    (safe_save 额外带轮转备份; 这里只做原子写, 用于不需要备份链的直写点)
+    """
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(suffix=".json", dir=os.path.dirname(filepath))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2, **kwargs)
+        os.replace(tmp, filepath)
+        return True
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except Exception:
+            pass
+        return False
+
+
 def restore_from_backup(filepath):
     """Restore main file from newest available backup. Returns restored data or None."""
     # Try backups in order: .bak, .2, .3, .4, .5
@@ -76,9 +97,8 @@ def restore_from_backup(filepath):
         try:
             with open(bak, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            # Restore main file
-            with open(filepath, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            # Restore main file (atomic: 恢复本身崩溃也不留半截 JSON)
+            atomic_write(filepath, data)
             return data
         except Exception:
             pass

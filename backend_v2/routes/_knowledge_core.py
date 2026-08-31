@@ -4,13 +4,13 @@ from pathlib import Path as _Path
 from datetime import datetime, timedelta
 from io import BytesIO
 import numpy as np
-from backend_v2.storage import safe_load, safe_save
+from backend_v2.storage import safe_load, safe_save, atomic_write
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from sqlalchemy import select, or_, and_, delete as sql_delete, text, null
 from sqlalchemy.orm import Session
 from backend_v2.database import get_db
-from backend_v2.auth import get_current_user, get_optional_user, verify_token
+from backend_v2.auth import get_current_user, get_optional_user, verify_token, require_admin
 from backend_v2.models import ProjectDocument, Project, KbDocumentShare, UserAuth
 from backend_v2.permissions import check_permission
 from backend_v2.ai_service import _call_llm, call_task
@@ -132,10 +132,12 @@ def _apply_permission_filter(query, user, db):
 # ── image serving ──
 
 @router.get("/images/{doc_id}/{filename}")
-def serve_image(doc_id: int, filename: str):
-    """Serve extracted document images."""
-    img_dir = os.path.join(settings.UPLOAD_DIR, "knowledge", "images", str(doc_id))
-    img_path = os.path.join(img_dir, filename)
+def serve_image(doc_id: int, filename: str, _user=Depends(get_current_user)):
+    """Serve extracted document images (auth required, traversal-safe)."""
+    img_dir = os.path.realpath(os.path.join(settings.UPLOAD_DIR, "knowledge", "images", str(doc_id)))
+    img_path = os.path.realpath(os.path.join(img_dir, _Path(filename).name))
+    if not img_path.startswith(img_dir + os.sep):
+        raise HTTPException(status_code=404, detail="图片不存在")
     if not os.path.exists(img_path):
         raise HTTPException(status_code=404, detail="图片不存在")
     from fastapi.responses import FileResponse
@@ -161,9 +163,7 @@ def load_categories():
         return DEFAULT_CATEGORIES[:]
 
 def save_categories(cats):
-    os.makedirs(os.path.dirname(CATEGORIES_FILE), exist_ok=True)
-    with open(CATEGORIES_FILE, "w", encoding="utf-8") as f:
-        json.dump({"categories": cats}, f, ensure_ascii=False)
+    atomic_write(CATEGORIES_FILE, {"categories": cats})
 
 def _call_llm_sync(messages, task="qa"):
     """Call LLM with task-aware routing. task: qa/summary/report/qa_gen/chat"""
@@ -184,9 +184,7 @@ def _load_vectors():
         return {}
 
 def _save_vectors(vecs):
-    os.makedirs(os.path.dirname(VECTOR_FILE), exist_ok=True)
-    with open(VECTOR_FILE, "w", encoding="utf-8") as f:
-        json.dump(vecs, f, ensure_ascii=False)
+    atomic_write(VECTOR_FILE, vecs)
 
 # ── image extraction ──
 
@@ -1617,8 +1615,7 @@ def enhanced_qa(data: dict, db: Session = Depends(get_db), _user=Depends(get_cur
                     hist = json.load(f)
             hist.append({"q": question, "a": answer[:1000], "ts": datetime.utcnow().isoformat()})
             if len(hist) > 20: hist = hist[-20:]
-            with open(session_file, "w", encoding="utf-8") as f:
-                json.dump(hist, f, ensure_ascii=False)
+            atomic_write(session_file, hist)
         except: pass
 
     return {"answer": answer, "sources": sources, "mode": mode, "doc_count": len(docs),
@@ -1694,9 +1691,7 @@ def update_config(data: dict, _user=Depends(get_current_user)):
     current = _load_prompt_config()
     for k in ("system_prompt","qa_template","summary_mode","temperature","max_context_chars","top_k_docs","max_file_size_mb","public_url","auto_import_folders"):
         if k in data: current[k] = data[k]
-    os.makedirs(os.path.dirname(PROMPT_CONFIG_FILE), exist_ok=True)
-    with open(PROMPT_CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(current, f, ensure_ascii=False, indent=2)
+    atomic_write(PROMPT_CONFIG_FILE, current)
     return current
 
 # ── Share Links (public Q&A for customers) ──
@@ -1807,8 +1802,7 @@ def generate_qa(data: dict, db: Session = Depends(get_db), _user=Depends(get_cur
                 qa["created_at"] = datetime.utcnow().isoformat()
             existing.extend(qa_pairs)
             os.makedirs(os.path.dirname(QA_FILE), exist_ok=True)
-            with open(QA_FILE, "w", encoding="utf-8") as f:
-                json.dump(existing, f, ensure_ascii=False, indent=2)
+            atomic_write(QA_FILE, existing)
             return {"qa_pairs": qa_pairs, "total_saved": len(existing)}
     except Exception as e:
         pass
@@ -1829,8 +1823,7 @@ def list_qa_pairs(_user=Depends(get_current_user)):
 @router.delete("/qa-pairs")
 def clear_qa_pairs(_user=Depends(get_current_user)):
     """Clear all QA pairs."""
-    with open(QA_FILE, "w", encoding="utf-8") as f:
-        json.dump([], f)
+    atomic_write(QA_FILE, [])
     return {"ok": True}
 
 
@@ -1908,8 +1901,7 @@ def generate_report(data: dict, db: Session = Depends(get_db), _user=Depends(get
         except: pass
         existing.insert(0, entry)
         os.makedirs(os.path.dirname(REPORT_FILE), exist_ok=True)
-        with open(REPORT_FILE, "w", encoding="utf-8") as f:
-            json.dump(existing, f, ensure_ascii=False, indent=2)
+        atomic_write(REPORT_FILE, existing)
         return {"report": report, "id": entry["id"], "sections": ["知识概览","核心观点","知识分布","知识缺口","应用建议"]}
     except Exception as e:
         return {"report": f"报告生成失败: {str(e)[:100]}", "sections": []}
@@ -1939,8 +1931,7 @@ def _log_view(doc_id: int):
         if len(log) > 200:
             log = log[-200:]
         os.makedirs(os.path.dirname(RECOMMEND_LOG), exist_ok=True)
-        with open(RECOMMEND_LOG, "w", encoding="utf-8") as f:
-            json.dump(log, f)
+        atomic_write(RECOMMEND_LOG, log)
     except: pass
 
 
@@ -2082,9 +2073,7 @@ def _load_spaces():
         return defaults
 
 def _save_spaces(spaces):
-    os.makedirs(os.path.dirname(SPACES_FILE), exist_ok=True)
-    with open(SPACES_FILE, "w", encoding="utf-8") as f:
-        json.dump(spaces, f, ensure_ascii=False, indent=2)
+    atomic_write(SPACES_FILE, spaces)
 
 
 @router.get("/spaces")
@@ -2461,9 +2450,7 @@ def _load_folder_paths(personal=False):
 
 def _save_folder_paths(paths, personal=False):
     ffile = PERSONAL_FOLDERS_FILE if personal else FOLDER_TREE_FILE
-    os.makedirs(os.path.dirname(ffile), exist_ok=True)
-    with open(ffile, "w", encoding="utf-8") as f:
-        json.dump(sorted(set(paths)), f, ensure_ascii=False, indent=2)
+    atomic_write(ffile, sorted(set(paths)))
 
 def _norm_folder(path):
     """Normalize folder path: always starts with /, no trailing /."""
@@ -3043,8 +3030,7 @@ def _log_activity(action: str, doc_id: int, doc_name: str, user: str):
         log.insert(0, entry)
         if len(log) > 200: log = log[:200]
         os.makedirs(os.path.dirname(ACTIVITY_FILE), exist_ok=True)
-        with open(ACTIVITY_FILE, "w", encoding="utf-8") as f:
-            json.dump(log, f, ensure_ascii=False, indent=2)
+        atomic_write(ACTIVITY_FILE, log)
     except: pass
 
 
@@ -3490,8 +3476,7 @@ def save_doc_version(doc_id: int, db: Session = Depends(get_db), _user=Depends(g
         with open(ver_file, "r", encoding="utf-8") as f: versions = json.load(f)
     versions.insert(0, snapshot)
     if len(versions) > 20: versions = versions[:20]
-    with open(ver_file, "w", encoding="utf-8") as f:
-        json.dump(versions, f, ensure_ascii=False, indent=2)
+    atomic_write(ver_file, versions)
     return {"version": snapshot, "total": len(versions)}
 
 
@@ -4051,9 +4036,7 @@ def update_dingtalk_config(data: dict, _user=Depends(get_current_user)):
         except: pass
     for k in ("webhook_url", "app_key", "app_secret"):
         if k in data: cfg[k] = data[k]
-    os.makedirs(os.path.dirname(config_file), exist_ok=True)
-    with open(config_file, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    atomic_write(config_file, cfg)
     return {"ok": True, "configured": bool(cfg.get("webhook_url"))}
 
 
@@ -4811,7 +4794,7 @@ def _schedule_backup():
 
 
 @router.get("/backup/status")
-def get_backup_status(_user=Depends(get_current_user)):
+def get_backup_status(_user=Depends(require_admin)):
     """Get backup system status and history."""
     cfg = _get_backup_config()
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
@@ -4826,7 +4809,7 @@ def get_backup_status(_user=Depends(get_current_user)):
 
 
 @router.post("/backup/create")
-def create_backup_manual(_user=Depends(get_current_user)):
+def create_backup_manual(_user=Depends(require_admin)):
     """Trigger a manual backup immediately."""
     result = _do_backup()
     if result and result.get("ok"):
@@ -4835,12 +4818,14 @@ def create_backup_manual(_user=Depends(get_current_user)):
 
 
 @router.post("/backup/restore")
-def restore_backup(data: dict, _user=Depends(get_current_user)):
+def restore_backup(data: dict, _user=Depends(require_admin)):
     """Restore database from a backup file."""
     filename = data.get("file", "")
-    if not filename or ".." in filename:
+    if not filename:
         raise HTTPException(400, "Invalid backup file")
-    backup_path = BACKUP_DIR / filename
+    backup_path = (BACKUP_DIR / filename).resolve()
+    if backup_path.parent != BACKUP_DIR.resolve():
+        raise HTTPException(400, "Invalid backup file")
     if not backup_path.exists():
         raise HTTPException(404, "备份文件不存在")
 
@@ -4853,16 +4838,24 @@ def restore_backup(data: dict, _user=Depends(get_current_user)):
     shutil.copy2(db_path, emergency)
 
     try:
-        shutil.copy2(str(backup_path), db_path)
+        # sqlite3 backup API 是事务性的: 恢复中途失败不会留下半截数据库
+        src = _sqlite3.connect(str(backup_path))
+        dst = _sqlite3.connect(db_path)
+        src.backup(dst)
+        dst.close(); src.close()
         return {"restored": filename, "emergency_backup": emergency.name, "message": "恢复成功，请重启服务器使生效"}
     except Exception as e:
-        # Restore from emergency
+        try: dst.close()
+        except Exception: pass
+        try: src.close()
+        except Exception: pass
+        # Rollback from emergency
         shutil.copy2(str(emergency), db_path)
         raise HTTPException(500, f"恢复失败，已回滚: {e}")
 
 
 @router.put("/backup/config")
-def update_backup_config(data: dict, _user=Depends(get_current_user)):
+def update_backup_config(data: dict, _user=Depends(require_admin)):
     """Update backup schedule configuration."""
     global _backup_timer
     cfg = _get_backup_config()

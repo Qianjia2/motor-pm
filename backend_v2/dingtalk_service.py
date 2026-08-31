@@ -2,6 +2,7 @@
 import json, threading, time, requests
 from urllib.parse import quote
 from pathlib import Path
+from backend_v2.storage import atomic_write
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 CONFIG_FILE = Path(__file__).parent.parent / "data" / "dingtalk_config.json"
@@ -47,9 +48,7 @@ def _load_cfg():
 
 
 def _save_cfg(cfg):
-    CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    atomic_write(str(CONFIG_FILE), cfg)
 
 
 def get_config():

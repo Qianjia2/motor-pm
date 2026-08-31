@@ -70,22 +70,33 @@ def seed():
         db.flush()
 
         # ── Default Users ──
+        # 密码不再硬编码：INITIAL_ADMIN_PASSWORD 环境变量优先，未设置则随机生成并打印一次。
+        # 已有库中的账号不会重置。
+        import secrets as _secrets
+        from backend_v2.config import settings as _settings
+        admin_pwd = _settings.INITIAL_ADMIN_PASSWORD or _secrets.token_urlsafe(12)
+        member_pwd = _settings.INITIAL_USER_PASSWORD or _secrets.token_urlsafe(12)
         users = [
-            ("admin", "admin123", "admin"),
-            ("jinzhaohai", "jin123", "pm"),
-            ("wangmingxuan", "wang123", "pm"),
-            ("lishupei", "123", "member"),
-            ("zhangxiang", "123", "member"),
-            ("liangweien", "123", "member"),
-            ("maxiaohao", "123", "member"),
+            ("admin", admin_pwd, "admin"),
+            ("jinzhaohai", member_pwd, "pm"),
+            ("wangmingxuan", member_pwd, "pm"),
+            ("lishupei", member_pwd, "member"),
+            ("zhangxiang", member_pwd, "member"),
+            ("liangweien", member_pwd, "member"),
+            ("maxiaohao", member_pwd, "member"),
         ]
+        admin_created = False
         for username, pwd, role in users:
             existing = (db.execute(select(UserAuth).where(UserAuth.username == username))).scalar_one_or_none()
             if not existing:
                 db.add(UserAuth(username=username, password_hash=hash_password(pwd), role=role))
+                if username == "admin":
+                    admin_created = True
 
         db.commit()
         print("Seed data loaded successfully.")
+        if admin_created:
+            print(f"[seed] 初始管理员已创建: admin / {admin_pwd}（请尽快修改；其他账号初始密码见环境变量 INITIAL_USER_PASSWORD）")
 
 
 if __name__ == "__main__":

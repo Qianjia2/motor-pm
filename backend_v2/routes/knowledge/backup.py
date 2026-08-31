@@ -5,7 +5,7 @@ from pathlib import Path as _Path
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from backend_v2.database import get_db
-from backend_v2.auth import get_current_user
+from backend_v2.auth import require_admin
 from backend_v2.config import settings
 
 router = APIRouter(tags=["knowledge-backup"])
@@ -74,7 +74,7 @@ def start_backup_scheduler():
 
 
 @router.get("/api/knowledge/backup/status")
-def get_backup_status(_user=Depends(get_current_user)):
+def get_backup_status(_user=Depends(require_admin)):
     cfg = _get_backup_config()
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     backups = [{"file": p.name, "size_mb": round(p.stat().st_size/(1024*1024),2), "created_at": datetime.fromtimestamp(p.stat().st_mtime).isoformat()}
@@ -83,17 +83,19 @@ def get_backup_status(_user=Depends(get_current_user)):
 
 
 @router.post("/api/knowledge/backup/create")
-def create_backup(_user=Depends(get_current_user)):
+def create_backup(_user=Depends(require_admin)):
     result = do_backup()
     if result and result.get("ok"): return result
     raise HTTPException(500, result.get("error", "Backup failed") if result else "Backup failed")
 
 
 @router.post("/api/knowledge/backup/restore")
-def restore_backup(data: dict, _user=Depends(get_current_user)):
+def restore_backup(data: dict, _user=Depends(require_admin)):
     filename = data.get("file", "")
-    if not filename or ".." in filename: raise HTTPException(400, "Invalid backup file")
-    backup_path = BACKUP_DIR / filename
+    if not filename: raise HTTPException(400, "Invalid backup file")
+    backup_path = (BACKUP_DIR / filename).resolve()
+    if backup_path.parent != BACKUP_DIR.resolve():
+        raise HTTPException(400, "Invalid backup file")
     if not backup_path.exists(): raise HTTPException(404, "备份文件不存在")
     db_path = str(_Path(settings.DATABASE_URL.replace("sqlite:///", "")))
     if not _Path(db_path).is_absolute():
@@ -109,7 +111,7 @@ def restore_backup(data: dict, _user=Depends(get_current_user)):
 
 
 @router.put("/api/knowledge/backup/config")
-def update_backup_config(data: dict, _user=Depends(get_current_user)):
+def update_backup_config(data: dict, _user=Depends(require_admin)):
     global _backup_timer
     cfg = _get_backup_config()
     for k in ("enabled", "interval_hours", "retention_count"):

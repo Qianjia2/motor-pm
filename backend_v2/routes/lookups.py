@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from backend_v2.database import get_db
-from backend_v2.auth import get_current_user
+from backend_v2.auth import get_current_user, require_admin
 from backend_v2.models import Phase, Gate, TechnicalLine, Role
 from backend_v2.storage import safe_load, safe_save
 
@@ -256,7 +256,7 @@ def _software_tabs():
 
 
 @router.put("/admin/project-tabs-config")
-def save_tabs_config(data: dict, _user=Depends(get_current_user)):
+def save_tabs_config(data: dict, _user=Depends(require_admin)):
     tabs = data.get("tabs", data.get("data", []))
     safe_save(TABS_CONFIG_FILE, tabs)
     return {"message": "Tab配置已保存", "count": len(tabs)}
@@ -264,7 +264,7 @@ def save_tabs_config(data: dict, _user=Depends(get_current_user)):
 
 # ── Data backup management ──
 @router.get("/admin/data-files")
-def list_data_files(_user=Depends(get_current_user)):
+def list_data_files(_user=Depends(require_admin)):
     """List all data files with backup status."""
     from backend_v2.storage import file_info, restore_from_backup
     data_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data")
@@ -280,7 +280,7 @@ def list_data_files(_user=Depends(get_current_user)):
 
 
 @router.post("/admin/data-files/restore")
-def restore_data_file(body: dict, _user=Depends(get_current_user)):
+def restore_data_file(body: dict, _user=Depends(require_admin)):
     """Restore a data file from its latest backup."""
     from backend_v2.storage import restore_from_backup
     name = body.get("file", "")

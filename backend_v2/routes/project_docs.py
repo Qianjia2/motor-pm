@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from pathlib import Path
 import mimetypes, aiofiles, uuid
 from backend_v2.database import get_db
+from backend_v2.storage import atomic_write
 from backend_v2.auth import get_current_user
 from backend_v2.audit import log_audit
 from backend_v2.config import settings
@@ -131,8 +132,7 @@ def _rebuild_kb_folder_cache():
         cache_file = _os.path.join(str(Path(settings.UPLOAD_DIR).parent), "data", "kb_folders.json")
         paths = ["/"] + sorted(f for f in all_folders if f.startswith("/") or not f.startswith("/"))
         paths = ["/" if not p.startswith("/") else p for p in paths]
-        with open(cache_file, "w", encoding="utf-8") as fp:
-            _json.dump(paths, fp, ensure_ascii=False)
+        atomic_write(cache_file, paths)
         db2.close()
     except Exception:
         pass  # Non-critical
@@ -152,9 +152,7 @@ def _save_folder_registry(project_id: int, folders: list):
     """Persist folder list for a project."""
     import json, os
     d = os.path.join(settings.UPLOAD_DIR, "..", "data", "project_folders")
-    os.makedirs(d, exist_ok=True)
-    with open(os.path.join(d, f"{project_id}.json"), "w", encoding="utf-8") as f:
-        json.dump(folders, f, ensure_ascii=False)
+    atomic_write(os.path.join(d, f"{project_id}.json"), folders)
 
 
 @router.get("/api/projects/{project_id}/doc-folders")
@@ -380,22 +378,21 @@ def preview_doc(
     """Preview a document: converts to HTML for inline preview, or serves raw file."""
     from fastapi.responses import HTMLResponse
 
-    # Auth: check token param (for iframe embed) or Authorization header
+    # Auth: check token param (for iframe embed) or Authorization header.
+    # raw=true no longer bypasses auth — it only controls inline vs download response.
     jwt_token = token or ""
     if not jwt_token and request:
         auth = request.headers.get("Authorization", "")
         if auth.startswith("Bearer "):
             jwt_token = auth[7:]
 
-    # Only enforce auth for non-raw access; raw is used inside iframe on already-authed page
-    if not raw:
-        if not jwt_token:
-            raise HTTPException(status_code=401, detail="需要登录")
-        from backend_v2.auth import verify_token
-        try:
-            verify_token(jwt_token)
-        except Exception:
-            raise HTTPException(status_code=401, detail="需要登录")
+    if not jwt_token:
+        raise HTTPException(status_code=401, detail="需要登录")
+    from backend_v2.auth import verify_token
+    try:
+        verify_token(jwt_token)
+    except Exception:
+        raise HTTPException(status_code=401, detail="需要登录")
 
     result = db.execute(select(ProjectDocument).where(ProjectDocument.id == doc_id))
     d = result.scalar_one_or_none()

@@ -13,7 +13,8 @@ class Settings(BaseSettings):
     DATA_DIR: str = ""  # 留空 = 本地 ./data；填服务器路径如 Z:/motor-pm-data
 
     # ── Auth ──
-    SECRET_KEY: str = "change-me-in-production-use-random-64-char-string"
+    # 必填：通过环境变量 SECRET_KEY 或 .env 提供，缺失时启动失败（防默认密钥被伪造 JWT）
+    SECRET_KEY: str
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     ALGORITHM: str = "HS256"
@@ -35,11 +36,11 @@ class Settings(BaseSettings):
         "cae", "inp", "dat", "sim", "frd", "odb",
         # Archives
         "zip", "rar", "7z", "tar", "gz", "bz2",
-        # Images
-        "jpg", "jpeg", "png", "gif", "bmp", "svg", "webp", "tiff", "tif", "ico",
-        # Text / Data / Code
+        # Images (svg 排除: 可内嵌脚本, 防存储型 XSS)
+        "jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "tif", "ico",
+        # Text / Data / Code (html/htm 排除: 同上, 防止免登录 /uploads 被用作钓鱼/钓鱼页)
         "txt", "csv", "json", "xml", "yaml", "yml", "toml",
-        "py", "ipynb", "js", "ts", "vue", "html", "htm", "css", "scss",
+        "py", "ipynb", "js", "ts", "vue", "css", "scss",
         "c", "cpp", "h", "hpp", "cs", "java", "go", "rs", "swift",
         "sql", "sh", "bat", "ps1", "cmd",
         # Logs / Config
@@ -60,6 +61,14 @@ class Settings(BaseSettings):
     # ── Rate Limit ──
     LOGIN_RATE_LIMIT: int = 5       # max attempts
     LOGIN_RATE_WINDOW: int = 300    # seconds
+
+    # ── Seed (seed.py 读取; 未设置时随机生成并打印一次) ──
+    INITIAL_ADMIN_PASSWORD: str = ""
+    INITIAL_USER_PASSWORD: str = ""
+
+    # ── Registration ──
+    # 默认关闭自助注册（内部系统由管理员建号）；确需开放时设 REGISTER_OPEN=true
+    REGISTER_OPEN: bool = False
 
     # ── Audit ──
     AUDIT_RETENTION_DAYS: int = 90

@@ -1,6 +1,7 @@
 """AI Service: Multi-engine LLM provider with intelligent routing."""
 import json, os, aiohttp
 from typing import Optional, AsyncGenerator
+from backend_v2.storage import atomic_write
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "ai_config.json")
 
@@ -46,9 +47,7 @@ def load_config() -> dict:
         return DEFAULT_CONFIG
 
 def _save_config(cfg: dict):
-    os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    atomic_write(CONFIG_PATH, cfg)
 
 def save_config(cfg: dict):
     current = load_config()

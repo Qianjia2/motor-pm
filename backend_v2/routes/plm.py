@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from backend_v2.database import get_db
 from backend_v2.auth import get_current_user
 from backend_v2.models import BomItem, Ecn, Project
-from backend_v2.storage import safe_load, safe_save
+from backend_v2.storage import safe_load, safe_save, atomic_write
 import openpyxl
 from io import BytesIO
 
@@ -56,8 +56,7 @@ def _sync_to_central_bom(item: dict, project_id: int, action: str):
             else:
                 items.append(entry)
 
-        with open(CENTRAL_BOM_FILE, "w", encoding="utf-8") as f:
-            json.dump(items, f, ensure_ascii=False, indent=2)
+        atomic_write(CENTRAL_BOM_FILE, items)
     except Exception:
         pass  # silent sync failure, don't block BOM editing
 
@@ -391,10 +390,14 @@ def export_bom(project_id: int, db: Session = Depends(get_db), _user=Depends(get
 # ═══════════════════ BOM File Attachments (simple upload, no parsing) ═══════════════════
 
 import uuid, aiofiles
+from pathlib import Path as _Path
 from backend_v2.config import settings
 
 BOM_FILES_DIR = os.path.join(settings.UPLOAD_DIR, "bom_files")
 os.makedirs(BOM_FILES_DIR, exist_ok=True)
+
+_BOM_FILE_EXTENSIONS = {e for e in settings.ALLOWED_EXTENSIONS} | {"", "xlsm", "csv"}
+_MAX_BOM_FILE_MB = 50
 
 
 def _bom_files_meta_path(build_id):
@@ -412,11 +415,16 @@ def _save_bom_files_meta(build_id, data):
 async def upload_bom_file(build_id: int, file: UploadFile = File(...),
                           _user=Depends(get_current_user)):
     """Upload a BOM file as attachment to a prototype build."""
+    ext = _Path(file.filename or "").suffix.lstrip(".").lower()
+    if ext not in _BOM_FILE_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"不支持的文件类型: .{ext}")
     file_id = uuid.uuid4().hex[:12]
-    safe_name = f"{build_id}_{file_id}_{file.filename}"
+    safe_name = f"{build_id}_{file_id}_{_Path(file.filename or 'file').name}"
     file_path = os.path.join(BOM_FILES_DIR, safe_name)
+    content = await file.read()
+    if len(content) > _MAX_BOM_FILE_MB * 1024 * 1024:
+        raise HTTPException(status_code=413, detail=f"文件超过 {_MAX_BOM_FILE_MB}MB 限制")
     async with aiofiles.open(file_path, "wb") as f:
-        content = await file.read()
         await f.write(content)
 
     meta = _load_bom_files_meta(build_id)
@@ -439,13 +447,13 @@ def list_bom_files(build_id: int, _user=Depends(get_current_user)):
 
 
 @router.get("/api/prototype-builds/{build_id}/bom-files/{file_id}/download")
-def download_bom_file(build_id: int, file_id: str):
+def download_bom_file(build_id: int, file_id: str, _user=Depends(get_current_user)):
     """Download a BOM file attachment."""
     meta = _load_bom_files_meta(build_id)
     entry = next((x for x in meta if x["id"] == file_id), None)
     if not entry:
         raise HTTPException(status_code=404, detail="文件不存在")
-    fp = os.path.join(BOM_FILES_DIR, entry["path"])
+    fp = os.path.join(BOM_FILES_DIR, _Path(entry["path"]).name)
     if not os.path.exists(fp):
         raise HTTPException(status_code=404, detail="文件不存在")
     return FileResponse(fp, filename=entry["name"])
@@ -453,13 +461,13 @@ def download_bom_file(build_id: int, file_id: str):
 
 @router.get("/api/prototype-builds/{build_id}/bom-files/{file_id}/preview")
 
-def preview_bom_file(build_id: int, file_id: str):
+def preview_bom_file(build_id: int, file_id: str, _user=Depends(get_current_user)):
     """Preview BOM file content (Excel -> HTML table, text -> pre)."""
     meta = _load_bom_files_meta(build_id)
     entry = next((x for x in meta if x["id"] == file_id), None)
     if not entry:
         raise HTTPException(status_code=404, detail="文件不存在")
-    fp = os.path.join(BOM_FILES_DIR, entry["path"])
+    fp = os.path.join(BOM_FILES_DIR, _Path(entry["path"]).name)
     if not os.path.exists(fp):
         raise HTTPException(status_code=404, detail="文件不存在")
 

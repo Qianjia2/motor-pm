@@ -10,6 +10,8 @@ jobs:
   unit:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      SECRET_KEY: ci-unit-test-only-secret-key
     steps:
       - uses: actions/checkout@v4
 
@@ -23,12 +25,16 @@ jobs:
       - name: Install deps
         run: pip install -r backend_v2/requirements.txt pytest
 
-      - name: Run unit tests
-        run: python -m pytest tests/unit -q
+      - name: Run unit + API tests
+        run: python -m pytest tests/unit tests/api -q
 
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      SECRET_KEY: ci-e2e-test-only-secret-key
+      INITIAL_ADMIN_PASSWORD: admin123
+      INITIAL_USER_PASSWORD: test123456
     steps:
       - uses: actions/checkout@v4
 

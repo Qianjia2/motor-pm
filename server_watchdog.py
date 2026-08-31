@@ -3,7 +3,7 @@ Server Watchdog — monitors and auto-restarts the MotorPM server.
 Runs as a background process. Checks health every 30 seconds.
 If server is down for 3 consecutive checks, restarts it.
 """
-import subprocess, time, sys, os, logging
+import subprocess, time, sys, os, logging, json, tempfile
 from datetime import datetime
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
@@ -20,18 +20,84 @@ logging.getLogger().addHandler(console)
 PORT = 5002
 CHECK_INTERVAL = 30  # seconds
 MAX_FAILURES = 3
+SLOW_RESPONSE_SECONDS = 5.0
+ALERT_COOLDOWN_SECONDS = 1800  # 同类型钉钉告警 30 分钟内只发一次
+
+# 重启计数持久化（重启计数/最近告警时间）
+STATE_FILE = "data/watchdog_state.json"
 
 server_process = None
 
 
-def is_server_alive():
-    """Check if the server responds to health check."""
+def _load_state():
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {"restart_count": 0, "last_restart": None, "last_alert": {}}
+
+
+def _save_state(state):
+    """原子写状态文件（tmp + os.replace，防写一半被杀留下半截 JSON）。"""
+    os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(suffix=".json", dir=os.path.dirname(STATE_FILE))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, STATE_FILE)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except Exception:
+            pass
+
+
+def _dingtalk_webhook_url():
+    """环境变量优先，其次取 backend_v2 配置的 DINGTALK_WEBHOOK_URL。"""
+    url = os.environ.get("DINGTALK_WEBHOOK_URL", "")
+    if url:
+        return url
+    try:
+        from backend_v2.config import settings
+        return settings.DINGTALK_WEBHOOK_URL
+    except Exception:
+        return ""
+
+
+def send_alert(text, alert_type="default"):
+    """发送钉钉机器人告警。同类型 30 分钟限流一次，防止刷屏。"""
+    url = _dingtalk_webhook_url()
+    if not url:
+        return False
+    state = _load_state()
+    now = time.time()
+    last = state.setdefault("last_alert", {}).get(alert_type, 0)
+    if now - last < ALERT_COOLDOWN_SECONDS:
+        return False
+    try:
+        import requests
+        resp = requests.post(url, json={"msgtype": "text", "text": {"content": text}}, timeout=5)
+        if resp.status_code == 200:
+            state["last_alert"][alert_type] = now
+            _save_state(state)
+            logging.info(f"DingTalk alert sent ({alert_type})")
+            return True
+        logging.error(f"DingTalk alert HTTP {resp.status_code}")
+    except Exception as e:
+        logging.error(f"DingTalk alert failed: {e}")
+    return False
+
+
+def check_health():
+    """检查服务器健康，返回 (存活, 响应时间ms)。响应 >5s 视为慢。"""
     import urllib.request
     try:
-        resp = urllib.request.urlopen(f"http://localhost:{PORT}/api/health", timeout=5)
-        return resp.status == 200
+        t0 = time.time()
+        resp = urllib.request.urlopen(f"http://localhost:{PORT}/api/health", timeout=8)
+        latency_ms = int((time.time() - t0) * 1000)
+        return resp.status == 200, latency_ms
     except Exception:
-        return False
+        return False, 0
 
 
 def is_tunnel_alive():
@@ -117,12 +183,14 @@ def stop_server():
 
 
 def main():
+    state = _load_state()
     logging.info("=== Watchdog started ===")
+    logging.info(f"Historical restarts: {state.get('restart_count', 0)}")
     failures = 0
     start_time = datetime.now()
 
     # Start server immediately on first launch
-    if not is_server_alive():
+    if not check_health()[0]:
         logging.info("Server not running — starting now...")
         start_server()
         time.sleep(8)
@@ -133,12 +201,15 @@ def main():
         restart_tunnel()
 
     while True:
-        alive = is_server_alive()
+        alive, latency_ms = check_health()
 
         if alive:
             if failures > 0:
                 logging.info(f"Server recovered after {failures} failures")
             failures = 0
+            if latency_ms > SLOW_RESPONSE_SECONDS * 1000:
+                logging.warning(f"Slow response: {latency_ms}ms (> {SLOW_RESPONSE_SECONDS}s)")
+                send_alert(f"[MotorPM] 服务器响应缓慢: {latency_ms}ms（阈值 {SLOW_RESPONSE_SECONDS}s）", "slow_response")
         else:
             failures += 1
             logging.warning(f"Server DOWN ({failures}/{MAX_FAILURES})")
@@ -149,13 +220,20 @@ def main():
             time.sleep(3)
             if start_server():
                 time.sleep(8)  # wait for server to initialize
-                if is_server_alive():
+                if check_health()[0]:
                     failures = 0
-                    logging.info("Restart successful")
+                    state = _load_state()
+                    state["restart_count"] = state.get("restart_count", 0) + 1
+                    state["last_restart"] = datetime.now().isoformat()
+                    _save_state(state)
+                    logging.info(f"Restart successful (total: {state['restart_count']})")
+                    send_alert(f"[MotorPM] 服务器自动重启 #{state['restart_count']}（{datetime.now().strftime('%H:%M:%S')}）", "restart")
                 else:
                     logging.error("Restart failed — server not responding")
+                    send_alert("[MotorPM] 服务器重启失败，请人工介入", "restart_failed")
             else:
                 logging.error("Restart failed — cannot start process")
+                send_alert("[MotorPM] 无法启动服务器进程，请人工介入", "restart_failed")
 
         uptime = datetime.now() - start_time
 
