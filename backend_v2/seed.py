@@ -9,33 +9,48 @@ def seed():
     init_db()
 
     with SessionLocal() as db:
-        # ── Phases ──
-        phases = [
-            ("概念阶段", "CONCEPT", 1, "需求分析、技术方案概念设计，门径G1"),
-            ("方案阶段", "SCHEME", 2, "详细方案设计、仿真分析，门径G2"),
-            ("详细设计", "DETAIL", 3, "工程图纸、BOM、工艺设计，门径G3"),
-            ("样机试制", "PROTOTYPE", 4, "零部件加工、样机装配，门径G4"),
-            ("测试验证", "VERIFY", 5, "台架测试、DV/PV验证，门径G5"),
-            ("设计定型", "FINAL", 6, "设计冻结、生产移交、项目结题"),
+        # ── Phases (硬件 P0→PP5 / 软件 S0→S4, 与项目导航模块的 phase code 硬编码一致) ──
+        phase_defs = [
+            ("概念需求阶段", "P0", 1, "需求分析、技术方案概念设计，门径G1", "hardware"),
+            ("方案设计阶段", "PP1", 2, "详细方案设计、仿真分析，门径G2", "hardware"),
+            ("样机试制阶段", "PP2", 3, "工程图纸、BOM、工艺设计、零部件加工、样机装配，门径G3", "hardware"),
+            ("验证阶段", "PP3", 4, "台架测试、DV/PV验证，门径G4", "hardware"),
+            ("设计定型阶段", "PP4", 5, "设计冻结、生产移交、项目结题，门径G5", "hardware"),
+            ("售后维护阶段", "PP5", 6, "量产支持、售后维护", "hardware"),
+            ("需求分析阶段", "S0", 101, "需求调研、立项申请，门径G-S0", "software"),
+            ("架构设计阶段", "S1", 102, "系统架构、技术选型，门径G-S1", "software"),
+            ("开发编码阶段", "S2", 103, "模块开发、编码实现，门径G-S2", "software"),
+            ("测试验证阶段", "S3", 104, "功能测试、集成测试，门径G-S3", "software"),
+            ("发布交付阶段", "S4", 105, "发布上线、交付验收，门径G-S4", "software"),
         ]
-        for i, (name, code, sort, desc) in enumerate(phases):
+        phase_ids = {}
+        for name, code, sort, desc, ptype in phase_defs:
             existing = (db.execute(select(Phase).where(Phase.code == code))).scalar_one_or_none()
             if not existing:
-                db.add(Phase(name=name, code=code, sort_order=sort, description=desc))
-        db.flush()
+                p = Phase(name=name, code=code, sort_order=sort, description=desc, project_type=ptype)
+                db.add(p)
+                db.flush()
+                phase_ids[code] = p.id
+            else:
+                phase_ids[code] = existing.id
 
-        # ── Gates ──
-        gates = [
-            ("G1 概念评审", "G1", 1, 1),
-            ("G2 方案评审", "G2", 2, 2),
-            ("G3 设计评审", "G3", 3, 3),
-            ("G4 试制评审", "G4", 4, 4),
-            ("G5 验证评审", "G5", 5, 5),
+        # ── Gates (按阶段 code 关联 phase_id) ──
+        gate_defs = [
+            ("G1 概念评审", "G1", 1, "P0"),
+            ("G2 方案评审", "G2", 2, "PP1"),
+            ("G3 设计评审", "G3", 3, "PP2"),
+            ("G4 试制评审", "G4", 4, "PP3"),
+            ("G5 验证评审", "G5", 5, "PP4"),
+            ("S0 需求评审", "G-S0", 101, "S0"),
+            ("S1 架构评审", "G-S1", 102, "S1"),
+            ("S2 开发完成", "G-S2", 103, "S2"),
+            ("S3 测试完成", "G-S3", 104, "S3"),
+            ("S4 发布交付", "G-S4", 105, "S4"),
         ]
-        for name, code, sort, phase_id in gates:
+        for name, code, sort, phase_code in gate_defs:
             existing = (db.execute(select(Gate).where(Gate.code == code))).scalar_one_or_none()
             if not existing:
-                db.add(Gate(name=name, code=code, sort_order=sort, phase_id=phase_id))
+                db.add(Gate(name=name, code=code, sort_order=sort, phase_id=phase_ids[phase_code]))
         db.flush()
 
         # ── Technical Lines ──
