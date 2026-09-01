@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import api from './api'
 
 const routes = [
   {
@@ -188,6 +189,20 @@ router.beforeEach((to, from, next) => {
     return next('/my-work')
   }
   next()
+})
+
+// 培训实操痕迹:登录用户进入模块页面时静默上报一次访问(防抖 5 分钟,失败忽略)。
+// 用于校验培训任务提交前是否确实进入过关联模块。
+let lastVisit = { path: '', at: 0 }
+router.afterEach((to) => {
+  const token = localStorage.getItem('access_token')
+  if (!token || to.meta.public) return
+  const path = to.matched[0]?.path || to.path
+  if (path === '/') return
+  const now = Date.now()
+  if (lastVisit.path === path && now - lastVisit.at < 5 * 60 * 1000) return
+  lastVisit = { path, at: now }
+  api.post('/training/tasks/visit', { module_path: path }).catch(() => {})
 })
 
 export default router

@@ -1005,12 +1005,25 @@ class TrainingTask(Base):
     title = Column(String(256), nullable=False)        # 任务标题
     description = Column(Text)                          # 任务说明(怎么算完成)
     points = Column(Integer, default=10)                # 分值
+    required_target = Column(String(64))                # 提交前必须实操的模块页面路径(如 /product-tech)
     sort_order = Column(Integer, default=0)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     __table_args__ = (Index("idx_tt_category", "category", "level"),)
+
+
+class TrainingModuleVisit(Base):
+    """培训任务实操痕迹:进入关联模块页面时前端上报一次,用于校验提交前是否实际访问过。"""
+    __tablename__ = "training_module_visit"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("user_auth.id"), nullable=False)
+    username = Column(String(64))                       # 冗余存用户名便于查询
+    module_path = Column(String(128), nullable=False)   # 访问的页面路径
+    visited_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (Index("idx_tmv_user_path", "user_id", "module_path", "visited_at"),)
 
 
 class TrainingTaskProgress(Base):

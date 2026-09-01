@@ -30,6 +30,7 @@ def get_db():
 
 def init_db():
     """Create all tables (dev convenience)."""
+    import backend_v2.models  # noqa: F401  确保所有模型注册进 metadata,新表才能被 create_all 创建
     Base.metadata.create_all(bind=engine)
     _ensure_columns()
     _seed_software_phases()
@@ -50,6 +51,7 @@ def _ensure_columns():
             ("change_request", "attachment_size", "INTEGER"),
             ("project_phase_gate", "signoff_initiated_by", "VARCHAR(64)"),
             ("user_auth", "kb_admin", "BOOLEAN DEFAULT 0"),
+            ("training_task", "required_target", "VARCHAR(64)"),
         ]:
             try:
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}"))

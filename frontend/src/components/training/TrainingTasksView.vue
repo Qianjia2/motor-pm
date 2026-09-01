@@ -59,6 +59,9 @@
           <div class="task-info">
             <div class="task-title">{{ t.title }}</div>
             <div class="task-desc">{{ t.description }}</div>
+            <div v-if="t.required_target" class="task-required">
+              <el-tag size="small" type="warning" effect="plain">需先进入「{{ t.required_target_name || t.category }}」实际操作后才可提交</el-tag>
+            </div>
           </div>
           <span class="task-points">+{{ t.points }}分</span>
           <div class="task-action">
@@ -66,7 +69,9 @@
             <el-tag v-else-if="t.my_status === 'submitted'" type="info" effect="plain" size="small">待审核</el-tag>
             <el-button v-else-if="t.my_status === 'rejected'" size="small" type="danger" plain
               @click="openSubmit(t)">被驳回 · 重新提交</el-button>
-            <el-button v-else size="small" type="primary" @click="openSubmit(t)">提交完成</el-button>
+            <el-button v-else size="small" type="primary" @click="openSubmit(t)">
+              {{ t.required_target && !t.my_visited ? '去实操' : '提交完成' }}
+            </el-button>
           </div>
         </div>
       </el-card>
@@ -104,6 +109,10 @@
           <el-input v-model="form.title" placeholder="任务标题" style="width:200px" />
           <el-input v-model="form.description" placeholder="任务说明(怎么算完成)" style="width:260px" />
           <el-input-number v-model="form.points" :min="1" :max="999" style="width:90px" />
+          <el-select v-model="form.required_target" placeholder="关联模块(提交前需实操)" clearable filterable
+            allow-create default-first-option style="width:200px">
+            <el-option v-for="(name, path) in moduleTargets" :key="path" :label="`${name} (${path})`" :value="path" />
+          </el-select>
           <el-button type="primary" :loading="saving" @click="saveTask">{{ editingId ? '保存修改' : '＋ 新增' }}</el-button>
           <el-button v-if="editingId" @click="resetForm">取消编辑</el-button>
         </div>
@@ -150,10 +159,12 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '../../stores/auth'
 import api from '../../api'
 
+const router = useRouter()
 const auth = useAuthStore()
 const loading = ref(false)
 const groups = ref([])
@@ -169,9 +180,27 @@ const manageVisible = ref(false)
 const allTasks = ref([])
 const editingId = ref(null)
 const saving = ref(false)
-const form = ref({ category: '', level: 'basic', title: '', description: '', points: 10 })
+const form = ref({ category: '', level: 'basic', title: '', description: '', points: 10, required_target: '' })
 
 const reviewVisible = ref(false)
+
+// 可选关联模块(与后端 MODULE_TARGETS 保持一致)
+const moduleTargets = {
+  '/projects': '项目列表',
+  '/tasks-milestones': '任务与里程碑',
+  '/gantt': '甘特图',
+  '/milestones': '里程碑',
+  '/clients': '客户管理',
+  '/bom': 'BOM 管理',
+  '/issue-risks': '问题风险管理',
+  '/phase-gate-review': '阶段门评审',
+  '/product-tech': '产品技术库',
+  '/knowledge': '知识库',
+  '/resources': '资源中心',
+  '/training': '培训学习',
+  '/reports': '报表中心',
+  '/ai': 'AI 助手',
+}
 
 function levelColor(lv) {
   return { basic: 'success', intermediate: 'primary', advanced: 'warning' }[lv] || 'info'
@@ -196,7 +225,19 @@ async function loadAll() {
 function groupDone(g) { return g.tasks.filter(t => t.my_status === 'approved').length }
 function groupPct(g) { return g.tasks.length ? Math.round(groupDone(g) * 100 / g.tasks.length) : 0 }
 
-function openSubmit(t) {
+async function openSubmit(t) {
+  // 任务配置了关联模块且 7 天内未访问过:先跳转实操,访问后(路由上报)再回来提交
+  if (t.required_target && !t.my_visited) {
+    try {
+      await ElMessageBox.confirm(
+        `该任务要求先在「${t.required_target_name || t.category}」页面实际操作后才能提交，现在前往该模块？`,
+        '需要先实操',
+        { confirmButtonText: '前往操作', cancelButtonText: '暂不', type: 'warning' }
+      )
+    } catch { return }
+    router.push(t.required_target)
+    return
+  }
   submitTask.value = t
   submitNote.value = t.my_status === 'rejected' ? t.my_submit_note || '' : ''
   submitVisible.value = true
@@ -211,7 +252,14 @@ async function doSubmit() {
     submitVisible.value = false
     await loadAll()
   } catch (e) {
-    ElMessage.error(e.response?.data?.detail || '提交失败')
+    const detail = e.response?.data?.detail
+    if (detail && typeof detail === 'object') {
+      // 后端校验实操痕迹失败:提示并跳转到关联模块
+      ElMessage.warning(detail.message || '提交失败，请先在关联模块实际操作')
+      if (detail.target) router.push(detail.target)
+    } else {
+      ElMessage.error(detail || '提交失败')
+    }
   } finally { submitting.value = false }
 }
 
@@ -223,11 +271,14 @@ async function openManage() {
 
 function resetForm() {
   editingId.value = null
-  form.value = { category: '', level: 'basic', title: '', description: '', points: 10 }
+  form.value = { category: '', level: 'basic', title: '', description: '', points: 10, required_target: '' }
 }
 function editTask(row) {
   editingId.value = row.id
-  form.value = { category: row.category, level: row.level, title: row.title, description: row.description, points: row.points }
+  form.value = {
+    category: row.category, level: row.level, title: row.title, description: row.description,
+    points: row.points, required_target: row.required_target || '',
+  }
 }
 async function saveTask() {
   if (!form.value.category.trim() || !form.value.title.trim()) {
@@ -314,6 +365,7 @@ onMounted(loadAll)
 .task-info { flex: 1; min-width: 0; }
 .task-title { font-size: 13px; font-weight: 600; color: #333; }
 .task-desc { font-size: 12px; color: #909399; margin-top: 2px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.task-required { margin-top: 4px; }
 .task-points { font-size: 12px; color: #8b5cf6; font-weight: 600; white-space: nowrap; }
 .task-action { width: 120px; text-align: right; }
 
