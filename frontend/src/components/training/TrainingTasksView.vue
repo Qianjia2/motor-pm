@@ -187,6 +187,7 @@ const reviewVisible = ref(false)
 // 可选关联模块(与后端 MODULE_TARGETS 保持一致)
 const moduleTargets = {
   '/projects': '项目列表',
+  '/management-weekly': '管理层周报',
   '/tasks-milestones': '任务与里程碑',
   '/gantt': '甘特图',
   '/milestones': '里程碑',

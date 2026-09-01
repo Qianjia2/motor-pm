@@ -18,6 +18,7 @@ VISIT_WINDOW_DAYS = 7
 # 可选关联模块(页面路径 -> 名称),供管理端配置;路径以 / 开头即可,不强制在本表内
 MODULE_TARGETS = {
     "/projects": "项目列表",
+    "/management-weekly": "管理层周报",
     "/tasks-milestones": "任务与里程碑",
     "/gantt": "甘特图",
     "/milestones": "里程碑",
