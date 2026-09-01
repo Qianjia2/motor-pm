@@ -1041,7 +1041,7 @@ def delete_bom_list(list_id: int, _user=Depends(get_current_user)):
     atts = _load_att()
     for a in atts[:]:
         if str(a.get("list_id")) == str(list_id):
-            path = a.get("stored_path", "")
+            path = _resolve_att_path(a)
             if path and os.path.exists(path):
                 try: os.remove(path)
                 except: pass
@@ -1996,6 +1996,25 @@ def _save_att(data):
     safe_save(ATTACH_META, data)
 
 
+def _resolve_att_path(a):
+    """返回附件实际文件路径。stored_path 是上传时的绝对路径,uploads 目录
+    迁移到 NAS 后可能失效,此时按 stored_name（相对文件名）在 ATTACH_DIR 重建。"""
+    path = a.get("stored_path", "")
+    if path and os.path.exists(path):
+        return path
+    stored = a.get("stored_name", "")
+    if stored:
+        cand = os.path.join(ATTACH_DIR, os.path.basename(stored))
+        if os.path.exists(cand):
+            return cand
+    fname = a.get("filename", "")
+    if fname and os.path.isdir(ATTACH_DIR):
+        for f in os.listdir(ATTACH_DIR):
+            if fname in f or f.endswith(fname):
+                return os.path.join(ATTACH_DIR, f)
+    return path
+
+
 @router.post("/{list_id}/files")
 async def bom_upload_files(list_id: str, files: list[UploadFile] = File(...), _user=Depends(get_current_user)):
     """Upload attachment files to a BOM list."""
@@ -2032,8 +2051,8 @@ def bom_download_file(list_id: str, file_id: int, _user=Depends(get_current_user
     """Download a BOM attachment file."""
     for a in _load_att():
         if a.get("list_id") == list_id and a.get("id") == file_id:
-            path = a.get("stored_path", "")
-            if os.path.exists(path):
+            path = _resolve_att_path(a)
+            if path and os.path.exists(path):
                 return FileResponse(path, filename=a.get("filename", "download"), media_type="application/octet-stream")
             raise HTTPException(404, "文件已丢失")
     raise HTTPException(404, "文件不存在")
@@ -2044,8 +2063,8 @@ def bom_preview_file(list_id: str, file_id: int, _user=Depends(get_current_user)
     """Preview a BOM attachment inline (images, PDFs, Excel, Word, text)."""
     for a in _load_att():
         if a.get("list_id") == list_id and a.get("id") == file_id:
-            path = a.get("stored_path", "")
-            if not os.path.exists(path):
+            path = _resolve_att_path(a)
+            if not path or not os.path.exists(path):
                 raise HTTPException(404, "文件已丢失")
             fn = (a.get("filename", "") or "").lower()
             mime_map = {
@@ -2087,8 +2106,8 @@ def bom_import_from_attachment(list_id: str, file_id: int, _user=Depends(get_cur
     att = next((a for a in atts if a.get("list_id") == list_id and a.get("id") == file_id), None)
     if not att:
         raise HTTPException(404, "附件不存在")
-    path = att.get("stored_path", "")
-    if not os.path.exists(path):
+    path = _resolve_att_path(att)
+    if not path or not os.path.exists(path):
         raise HTTPException(404, "文件已丢失")
     fn = (att.get("filename", "") or "").lower()
 

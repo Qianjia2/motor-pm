@@ -726,6 +726,26 @@ def _next_attach_id(data):
     return max((x.get("id", 0) for x in data), default=0) + 1
 
 
+def _resolve_attach_path(a):
+    """返回附件实际文件路径。stored_path 是上传时的绝对路径,uploads 目录
+    迁移到 NAS 后可能失效,此时按上传命名规则在 UPLOAD_DIR 下重建。"""
+    path = a.get("stored_path", "")
+    if path and os.path.exists(path):
+        return path
+    item_dir = os.path.join(UPLOAD_DIR, str(a.get("item_id", "")))
+    # 规则1: {item_id}_{file_id}_{filename}（upload_files / batch_upload_drawings 命名）
+    fname = a.get("filename", "")
+    cand = os.path.join(item_dir, f"{a.get('item_id')}_{a.get('id')}_{fname}")
+    if os.path.exists(cand):
+        return cand
+    # 规则2: 目录下按文件名模糊匹配
+    if fname and os.path.isdir(item_dir):
+        for f in os.listdir(item_dir):
+            if fname in f or f.endswith(fname):
+                return os.path.join(item_dir, f)
+    return path
+
+
 @router.get("/{item_id}/files")
 def list_files(item_id: int, _user=Depends(get_current_user)):
     attachments = _load_attachments()
@@ -776,8 +796,9 @@ def delete_file(item_id: int, file_id: int, _user=Depends(get_current_user)):
 
     # Remove physical file
     try:
-        if os.path.exists(target.get("stored_path", "")):
-            os.remove(target.get("stored_path"))
+        resolved = _resolve_attach_path(target)
+        if resolved and os.path.exists(resolved):
+            os.remove(resolved)
     except:
         pass
 
@@ -798,8 +819,8 @@ def download_file(item_id: int, file_id: int, _user=Depends(get_current_user)):
     attachments = _load_attachments()
     for a in attachments:
         if a.get("item_id") == item_id and a.get("id") == file_id:
-            path = a.get("stored_path", "")
-            if os.path.exists(path):
+            path = _resolve_attach_path(a)
+            if path and os.path.exists(path):
                 return FileResponse(path, filename=a.get("filename", "download"), media_type="application/octet-stream")
             raise HTTPException(status_code=404, detail="文件已丢失")
     raise HTTPException(status_code=404, detail="文件不存在")
@@ -811,8 +832,8 @@ def preview_file(item_id: int, file_id: int, _user=Depends(get_current_user)):
     attachments = _load_attachments()
     for a in attachments:
         if a.get("item_id") == item_id and a.get("id") == file_id:
-            path = a.get("stored_path", "")
-            if not os.path.exists(path):
+            path = _resolve_attach_path(a)
+            if not path or not os.path.exists(path):
                 raise HTTPException(status_code=404, detail="文件已丢失")
             fn = (a.get("filename", "") or "").lower()
             # Map common extensions to inline MIME types
