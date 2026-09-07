@@ -163,7 +163,13 @@ function triggerImageUpload() {
       const res = await api.post('/report-gen/image-to-report', fd, {
         timeout: 180000,
       })
-      chatHistory.value.push({ role: 'assistant', content: res.data.content })
+      const d = res.data
+      if (d.ok === false) {
+        const errs = (d.ocr_errors || []).map(x => '• ' + x).join('\n')
+        chatHistory.value.push({ role: 'assistant', content: '⚠️ ' + (d.detail || d.error || '图片识别失败') + (errs ? '\n' + errs : '') })
+      } else {
+        chatHistory.value.push({ role: 'assistant', content: d.content || '未生成内容' })
+      }
     } catch (e) {
       chatHistory.value.push({ role: 'assistant', content: '图片识别失败: ' + (e?.response?.data?.detail || e?.message || '未知错误') })
     } finally {

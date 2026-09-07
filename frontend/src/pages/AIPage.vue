@@ -171,11 +171,13 @@ async function onImagesSelected(e) {
   imgFiles.value = Array.from(files); imgLoading.value = true; imgResult.value = ''
   const fd = new FormData(); for (const f of files) fd.append('files', f)
   try {
-    const resp = await fetch('/api/reports/image-to-report', {
+    const resp = await fetch('/api/report-gen/image-to-report', {
       method: 'POST', headers: { Authorization: `Bearer ${localStorage.getItem('access_token')}` }, body: fd,
     })
-    const data = await resp.json()
-    imgResult.value = data.report || data.result || data.detail || '无结果'
+    const data = await resp.json().catch(() => ({}))
+    if (!resp.ok) imgResult.value = data.detail || `请求失败(${resp.status})`
+    else if (data.ok === false) imgResult.value = data.detail || data.error || '识别失败'
+    else imgResult.value = data.content || '无结果'
   } catch (e) { imgResult.value = '识别失败: ' + e.message }
   imgLoading.value = false; e.target.value = ''
 }
