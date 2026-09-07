@@ -161,7 +161,6 @@ function triggerImageUpload() {
       fd.append('report_type', 'stage_report')
       fd.append('context', '')
       const res = await api.post('/report-gen/image-to-report', fd, {
-        headers: { 'Content-Type': 'multipart/form-data' },
         timeout: 180000,
       })
       chatHistory.value.push({ role: 'assistant', content: res.data.content })

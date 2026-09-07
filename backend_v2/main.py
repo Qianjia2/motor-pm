@@ -113,7 +113,9 @@ app.add_middleware(
 
 # ── Unify loopback host: 127.0.0.1 → localhost ──
 # 浏览器把 127.0.0.1 和 localhost 视为不同站点，登录状态互不相通。
-# 统一重定向到 localhost，保证所有访问走同一个 origin，登录状态一致。
+# 只对「页面导航」301 到 localhost 统一 origin（地址栏会跟着变，登录态一致）。
+# API/WebSocket 一律直通，不做重定向 —— 跨源 307 会被浏览器丢弃 Authorization
+# 头，multipart 上传在部分客户端还会被转成 GET 而返回 405 Method Not Allowed。
 from fastapi.responses import RedirectResponse
 
 
@@ -121,13 +123,11 @@ from fastapi.responses import RedirectResponse
 async def unify_loopback_host(request: Request, call_next):
     host = request.headers.get("host", "")
     if host.startswith("127.0.0.1"):
-        # WebSocket 握手不适用 HTTP 重定向，直接放行
-        if request.headers.get("upgrade", "").lower() == "websocket":
-            return await call_next(request)
-        url = request.url.replace(hostname="localhost")
-        # POST 等带 body 的请求用 307 保留方法和请求体
-        code = 307 if request.method in ("POST", "PUT", "PATCH", "DELETE") else 301
-        return RedirectResponse(str(url), status_code=code)
+        path = request.url.path
+        is_page_nav = request.method in ("GET", "HEAD") and not path.startswith("/api/")
+        if is_page_nav:
+            url = request.url.replace(hostname="localhost")
+            return RedirectResponse(str(url), status_code=301)
     return await call_next(request)
 
 
