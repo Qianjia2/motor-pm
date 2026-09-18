@@ -16,14 +16,14 @@
         <div class="kpi-value" style="color:#ef4444">{{ overview.blocked }}</div>
         <div class="kpi-label">阻塞项目</div>
         <div v-if="blockedProjects.length" class="kpi-detail">
-          <span v-for="p in blockedProjects.slice(0,2)" :key="p.id" class="kpi-link" @click="goProject(p)">{{ p.name.slice(0,12) }}</span>
+          <span v-for="p in blockedProjects.slice(0,2)" :key="p.id" class="kpi-link" @click="goProject(p, 'risks')">{{ p.name.slice(0,12) }}</span>
         </div>
       </div>
       <div class="kpi-card has-alert">
         <div class="kpi-value" style="color:#f59e0b">{{ overview.atRisk }}</div>
         <div class="kpi-label">有风险</div>
         <div v-if="riskProjects.length" class="kpi-detail">
-          <span v-for="p in riskProjects.slice(0,2)" :key="p.id" class="kpi-link" @click="goProject(p)">{{ p.name.slice(0,12) }}</span>
+          <span v-for="p in riskProjects.slice(0,2)" :key="p.id" class="kpi-link" @click="goProject(p, 'risks')">{{ p.name.slice(0,12) }}</span>
         </div>
       </div>
       <div class="kpi-card">
@@ -62,11 +62,13 @@
           <a href="#" class="card-link" @click.prevent="$router.push('/projects')">项目列表 →</a>
         </div>
         <div v-if="exceptionProjects.length === 0" class="empty-state" style="color:#10b981;padding:24px">所有项目运行正常 ✓</div>
-        <div v-for="p in exceptionProjects" :key="p.id" class="todo-row" @click="goProject(p)">
+        <div v-for="p in exceptionProjects" :key="p.id" class="todo-row" @click="goProject(p, 'risks')">
           <span class="todo-icon">{{ p.overall_status==='blocked' ? '🚫' : '⚠️' }}</span>
           <div style="flex:1;min-width:0">
             <div class="todo-title">{{ p.name }}</div>
             <div class="todo-meta">{{ p.code }} · {{ p.current_phase?.name || '-' }}</div>
+            <!-- 异常原因:直接来自后端的健康推导分量,与上面那个状态标签同源 -->
+            <div v-if="p.health_reason" class="todo-reason">{{ p.health_reason }}</div>
           </div>
           <span class="tag" :class="p.overall_status==='blocked'?'tag-red':'tag-orange'" style="font-size:10px">
             {{ p.overall_status==='blocked' ? '阻塞' : '有风险' }}
@@ -263,7 +265,13 @@ const phaseStats = computed(() => {
 
 function statusKey(s) { return s==='blocked'?'blocked':s==='at_risk'?'risk':'normal' }
 function isOverdue(d) { if(!d) return false; const t=new Date(); t.setHours(0,0,0,0); return new Date(d)<t }
-function goProject(row) { router.push('/projects/'+row.id) }
+// tab 可选:不传就落在项目详情页默认概览页签。
+// 非字符串一律当没传——本函数也直接挂在 el-table 的 row-click 上,那个事件会
+// 把列对象塞进第二个参数,不挡一下会拼出 ?tab=[object Object]。
+function goProject(row, tab) {
+  const t = typeof tab === 'string' ? tab : null
+  router.push(t ? `/projects/${row.id}?tab=${t}` : '/projects/'+row.id)
+}
 function onTableFilter() {}
 
 // ── Load ──
@@ -276,7 +284,7 @@ onMounted(async () => {
     getResourceMatrix().catch(()=>({data:[]})),
   ])
   const s = dash.data?.summary || {}
-  healthGrid.value = (projects.data?.data||[]).map(p=>({...p, open_risks:0, completion_pct:p.completion_pct||0}))
+  healthGrid.value = (projects.data?.data||[]).map(p=>({...p, open_risks:p.open_risks??0, completion_pct:p.completion_pct||0}))
   const _ps = healthGrid.value
   overview.value = {
     total: s.total||0, normal: s.normal||0, atRisk: s.at_risk||0, blocked: s.blocked||0,
@@ -322,6 +330,7 @@ onMounted(async () => {
 .todo-icon { font-size:16px; flex-shrink:0; }
 .todo-title { font-size:13px; font-weight:500; color:var(--text); }
 .todo-meta { font-size:11px; color:var(--text-muted); margin-top:1px; }
+.todo-reason { font-size:11px; color:#b45309; margin-top:2px; }
 
 /* Table */
 .project-name { font-weight:600; color:var(--text); }

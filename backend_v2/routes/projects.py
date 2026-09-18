@@ -14,12 +14,17 @@ from backend_v2.models import Project, ProjectPhaseGate, Phase, Gate, Milestone,
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
 
-def derive_project_health(db: Session, projects: list) -> dict:
-    """按健康信号实时推导项目整体状态(不落库):
+def derive_project_health_detail(db: Session, projects: list) -> dict:
+    """按健康信号实时推导项目状态,并一并给出判定用的两个分量(不落库):
     - 已完成项目(有实际完成日期) → completed
     - 逾期里程碑>=3 或 未关闭风险>=2 → blocked
     - 逾期里程碑>=1 或 未关闭风险>=1 → at_risk
     - 其余 → normal
+
+    返回 {pid: {"status": str, "overdue_milestones": int, "open_risks": int}}。
+
+    overdue_milestones / open_risks 就是判定时用的那两个数,界面直接拿它当"异常原因",
+    不再另行推算——分头算两遍,迟早会对不上。
     """
     pids = [p.id for p in projects if p.id]
     if not pids:
@@ -39,20 +44,40 @@ def derive_project_health(db: Session, projects: list) -> dict:
             RiskIssue.status.in_(["open", "in_progress", "pending_review"]),
         ).group_by(RiskIssue.project_id)
     ).all())
-    health = {}
+    detail = {}
     for p in projects:
-        if p.actual_end_date:
-            health[p.id] = "completed"
-            continue
         overdue = overdue_map.get(p.id, 0)
         risks = open_risk_map.get(p.id, 0)
-        if overdue >= 3 or risks >= 2:
-            health[p.id] = "blocked"
+        if p.actual_end_date:
+            status = "completed"
+        elif overdue >= 3 or risks >= 2:
+            status = "blocked"
         elif overdue >= 1 or risks >= 1:
-            health[p.id] = "at_risk"
+            status = "at_risk"
         else:
-            health[p.id] = "normal"
-    return health
+            status = "normal"
+        detail[p.id] = {"status": status, "overdue_milestones": overdue, "open_risks": risks}
+    return detail
+
+
+def derive_project_health(db: Session, projects: list) -> dict:
+    """{pid: status}。判定规则与原因分量见 derive_project_health_detail。"""
+    return {pid: d["status"] for pid, d in derive_project_health_detail(db, projects).items()}
+
+
+def health_reason_text(status: str, overdue: int, risks: int):
+    """异常原因文案,如「3 个里程碑逾期、2 项风险未关闭」;正常/已完成返回 None。
+
+    按判定规则,blocked/at_risk 必然至少有一个分量非零,所以异常项目不会出现空原因。
+    """
+    if status not in ("blocked", "at_risk"):
+        return None
+    bits = []
+    if overdue:
+        bits.append(f"{overdue} 个里程碑逾期")
+    if risks:
+        bits.append(f"{risks} 项风险未关闭")
+    return "、".join(bits) or None
 
 
 def _fix_empty_strings(data: dict) -> dict:
@@ -183,12 +208,19 @@ def list_projects(
                 current_name = phase_order.get(items[-1]["phase_id"], (None,))[0]  # last phase
             phase_map[pid] = current_name
 
-    health_map = derive_project_health(db, projects)
+    health_detail = derive_project_health_detail(db, projects)
 
     def _project_dict(p):
         d = project_to_dict(p, pct_map.get(p.id))
         # 推导后的健康状态覆盖落库字段(全库默认 normal,无维护入口)
-        d["overall_status"] = health_map.get(p.id, d["overall_status"])
+        hd = health_detail.get(p.id) or {}
+        d["overall_status"] = hd.get("status", d["overall_status"])
+        # 异常原因:把判定用的分量原样带出,驾驶舱据此显示原因(见 health_reason_text)。
+        # open_risks 也是项目表格里那个红色计数标签的数据源。
+        d["overdue_milestones"] = hd.get("overdue_milestones", 0)
+        d["open_risks"] = hd.get("open_risks", 0)
+        d["health_reason"] = health_reason_text(
+            d["overall_status"], d["overdue_milestones"], d["open_risks"])
         # Override current_phase with auto-detected one
         auto_phase = phase_map.get(p.id)
         if auto_phase:
@@ -371,7 +403,12 @@ def get_project(project_id: int, db: Session = Depends(get_db), _current_user=De
     done_ms = sum(1 for m in ms_list if m.status == "completed")
     pct = round(done_ms / total_ms * 100) if total_ms > 0 else 0
     d = project_to_dict(p, pct)
-    d["overall_status"] = derive_project_health(db, [p]).get(p.id, d["overall_status"])
+    hd = derive_project_health_detail(db, [p]).get(p.id) or {}
+    d["overall_status"] = hd.get("status", d["overall_status"])
+    d["overdue_milestones"] = hd.get("overdue_milestones", 0)
+    d["open_risks"] = hd.get("open_risks", 0)
+    d["health_reason"] = health_reason_text(
+        d["overall_status"], d["overdue_milestones"], d["open_risks"])
     d["phase_gates"] = [_pg_to_dict(pg) for pg in (p.phase_gates or [])]
     return d
 

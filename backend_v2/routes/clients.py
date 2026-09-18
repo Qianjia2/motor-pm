@@ -2,7 +2,7 @@
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, update, delete, func, case
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 from backend_v2.database import get_db
 from backend_v2.auth import get_current_user, require_admin
 from backend_v2.schemas import ClientCreate, ClientUpdate
@@ -110,7 +110,9 @@ def client_profile(client_id: int, db: Session = Depends(get_db), _current_user=
             pct_map[pid] = round(done_ms / total_ms * 100) if total_ms > 0 else None
     # 沟通记录（最近 50 条）
     comms = db.execute(
-        select(ClientCommunication).where(ClientCommunication.client_id == client_id)
+        select(ClientCommunication)
+        .options(selectinload(ClientCommunication.project))   # 预加载关联项目,避免逐行 N+1
+        .where(ClientCommunication.client_id == client_id)
         .order_by(ClientCommunication.comm_date.desc(), ClientCommunication.id.desc()).limit(50)
     ).scalars().all()
     # 关系图谱数据：项目-成员（项目经理/角色）、商机负责人

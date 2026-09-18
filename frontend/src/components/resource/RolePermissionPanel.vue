@@ -48,21 +48,15 @@
               <el-button size="small" type="primary" plain :disabled="!selectedDept" @click="openRoleDialog(null)"><el-icon><Plus /></el-icon> 新增角色</el-button>
               <span v-if="!selectedDept" style="font-size:12px;color:var(--text-muted)">请先在左侧选择部门</span>
               <el-button type="primary" size="small" :disabled="!matrixDirty || !selectedDept" @click="saveMatrix">保存矩阵</el-button>
+              <el-button size="small" :disabled="!selectedDept" @click="applyToMembers">应用到本部门所有人</el-button>
             </div>
           </div>
           <div v-if="selectedDept" style="padding:12px 0">
-            <el-table :data="moduleRows" size="small" border>
-              <el-table-column prop="label" label="模块" min-width="140" />
-              <el-table-column v-for="a in actions" :key="a.value" :label="a.label" align="center" width="72">
-                <template #default="{ row }">
-                  <el-checkbox
-                    :model-value="!!matrix[row.module]?.[a.value]"
-                    @change="(v) => toggleAction(row.module, a.value, v)" />
-                </template>
-              </el-table-column>
-            </el-table>
+            <PermissionMatrixEditor v-model="matrix" @change="matrixDirty = true" />
             <div style="margin-top:8px;font-size:12px;color:var(--text-muted)">
-              该部门下所有账号的权限按此矩阵计算（重新登录后完全生效）；未配置的部门沿用原角色权限。
+              这是<strong>模板</strong>：新建人员时默认套用，但改动<strong>不会</strong>自动影响已有账号
+              （权限一旦配到人身上就以那份为准）。保存后如需对全部门生效，
+              点右上角「应用到本部门所有人」，确认框会说明将覆盖哪些人。
             </div>
           </div>
           <div v-else style="padding:40px;text-align:center;color:var(--text-muted);font-size:13px">
@@ -88,8 +82,9 @@
             <div class="rp-desc-block">
               <div class="rp-desc-title">权限规则</div>
               <div class="rp-desc-text">
-                账号权限按其所属部门的权限矩阵计算（重新登录后完全生效）；未配置矩阵的部门沿用账号原角色权限。
-                角色仅作为人员分组标签，不参与权限计算。
+                权限<strong>按人</strong>：每个账号自己那份矩阵说了算，在「人员与账号」Tab 的「权限」里单独配置，
+                改完即时生效、不需要重新登录。这里配的是<strong>部门模板</strong>——新建人员时默认套用，
+                改完要点「应用到本部门所有人」才会影响到已有账号。角色仅作为人员分组标签，不参与权限计算。
               </div>
             </div>
             <div class="rp-desc-block">
@@ -143,25 +138,16 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   getDepartments, createDepartment, updateDepartment, deleteDepartment,
   getPermissionRoles, createPermissionRole, updatePermissionRole, deletePermissionRole,
+  applyDepartmentPermissions,
 } from '../../api/index.js'
+import PermissionMatrixEditor from './PermissionMatrixEditor.vue'
 
 const emit = defineEmits(['saved'])
 
-const MODULES = [
-  ['my_work', '我的工作台'], ['dashboard', '项目驾驶舱'], ['mgmt_weekly', '管理层周报'],
-  ['product_tech', '产品技术库'], ['bom', 'BOM管理'], ['projects', '系统集成开发项目台账'],
-  ['tasks_milestones', '任务与里程碑'], ['issue_risks', '问题风险管理'], ['phase_gate', '阶段门评审'],
-  ['reports', '报告中心'], ['ai', 'AI 助手'], ['knowledge', '知识库'],
-  ['clients', '客户管理'], ['users', '资源管理'], ['audit_logs', '操作审计'], ['settings', '系统设置'],
-]
-const actions = [
-  { value: 'view', label: '查看' }, { value: 'create', label: '新建' },
-  { value: 'edit', label: '编辑' }, { value: 'delete', label: '删除' }, { value: 'export', label: '导出' },
-]
 const roleTemplates = [
   { name: '系统管理员', desc: '权限配置：拥有所有权限，管理系统配置和用户' },
   { name: '销售', desc: '权限配置：负责商机跟踪、客户管理、销售预测' },
@@ -182,14 +168,6 @@ const currentDeptLabel = computed(() => selectedDept.value ? selectedDept.value.
 const deptRoles = (deptId) => roles.value.filter(r => r.dept_id === deptId)
 const deptName = (deptId) => departments.value.find(d => d.id === deptId)?.name || '—'
 const selectedRole = computed(() => roles.value.find(r => r.id === selectedRoleId.value) || null)
-
-const moduleRows = computed(() => MODULES.map(([key, label]) => ({ module: key, label })))
-
-function toggleAction(module, action, val) {
-  if (!matrix.value[module]) matrix.value[module] = {}
-  matrix.value[module][action] = !!val
-  matrixDirty.value = true
-}
 
 function selectDept(id) {
   selectedDeptId.value = id
@@ -309,6 +287,37 @@ async function saveMatrix() {
     emit('saved')
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '保存失败')
+  }
+}
+
+/** 把当前矩阵下发给本部门所有人的账号：先 dry_run 拿名单，确认后再下发。 */
+async function applyToMembers() {
+  const dept = selectedDept.value
+  if (!dept) return
+  try {
+    // 用编辑器里当前这份（不一定已保存），这样可以先预览再决定要不要落库
+    const preview = await applyDepartmentPermissions(dept.id, matrix.value, true)
+    const info = preview.data || {}
+    if (!info.affected) {
+      ElMessage.info(`「${dept.name}」下没有可下发的账号（管理员和停用账号不在其中）`)
+      return
+    }
+    const warn = info.customized
+      ? `其中 ${info.customized} 人已单独配置过权限，将被覆盖。`
+      : '其中没有已单独配置的账号，不会覆盖任何人的个性化设置。'
+    try {
+      await ElMessageBox.confirm(
+        `将把当前矩阵下发给「${dept.name}」的 ${info.affected} 个账号。${warn}`,
+        '确认下发', { type: 'warning', confirmButtonText: '下发', cancelButtonText: '取消' })
+    } catch {
+      return // 用户点了取消——不是错误，静默返回
+    }
+    const r = await applyDepartmentPermissions(dept.id, matrix.value, false)
+    ElMessage.success(`已下发给 ${r.data.affected} 个账号`)
+    await loadData()
+    emit('saved')
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '下发失败')
   }
 }
 

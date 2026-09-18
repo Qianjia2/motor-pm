@@ -80,8 +80,8 @@
             <div class="stat-label">已关联账号</div>
           </div>
           <div class="stat-card stat-warning">
-            <div class="stat-value">{{ deptPermCount }}</div>
-            <div class="stat-label">部门矩阵生效</div>
+            <div class="stat-value">{{ manualPermCount }}</div>
+            <div class="stat-label">已单独配置权限</div>
           </div>
           <div class="stat-card stat-danger">
             <div class="stat-value">{{ noDeptCount }}</div>
@@ -143,9 +143,10 @@
                 <span v-else style="color:#c0c4cc;font-size:12px">-</span>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="210" fixed="right">
+            <el-table-column label="操作" width="270" fixed="right">
               <template #default="{row}">
                 <el-button link size="small" type="primary" @click="openMemberEdit(row)">编辑</el-button>
+                <el-button link size="small" type="success" :disabled="!getUserForMember(row)" @click="openPermDrawer(row)">权限</el-button>
                 <el-button link size="small" type="warning" @click="bindDingtalk(row)">绑定钉钉</el-button>
                 <template v-if="getUserForMember(row)">
                   <el-button link size="small" @click="resetUserPwd(getUserForMember(row))">重置密码</el-button>
@@ -214,10 +215,53 @@
         </el-form-item>
       </el-form>
       <div v-if="memberForm.department" style="margin-top:0;font-size:12px;color:var(--text-secondary)">
-        账号权限按所属部门（{{ memberForm.department }}）的权限矩阵计算，可在「角色权限」Tab 配置
+        账号权限<strong>按人</strong>：建号时套用所属部门（{{ memberForm.department }}）的模板，
+        之后可在列表的「权限」里单独调整；改部门模板不会自动影响已有账号
       </div>
       <template #footer><el-button @click="showAddMember=false">取消</el-button><el-button type="primary" @click="saveMember" :loading="savingMember">保存</el-button></template>
     </el-dialog>
+
+    <!-- 单个账号的权限（按人配置） -->
+    <el-drawer v-model="permDrawer.show" size="620px" :title="permDrawerTitle">
+      <div v-if="permDrawer.user" class="perm-drawer">
+        <div class="perm-drawer-head">
+          <div>
+            <div class="perm-drawer-name">{{ permDrawer.member?.name }}</div>
+            <div class="perm-drawer-sub">
+              账号 {{ permDrawer.user.username }} · {{ permDrawer.member?.department || '未设置部门' }}
+              · 角色 {{ roleLabel(permDrawer.user.role) }}
+            </div>
+          </div>
+          <el-tag v-if="permDrawer.user.perm_source === 'manual'" type="success" size="small">已单独配置</el-tag>
+          <el-tag v-else type="info" size="small">当前随部门模板</el-tag>
+        </div>
+
+        <el-alert type="info" :closable="false" style="margin:10px 0">
+          <template #default>
+            这份矩阵就是这个账号的权限，<strong>改完即时生效、不用重新登录</strong>。
+            保存后该账号的来源会标成「已单独配置」，之后改部门模板不再影响他
+            ——除非在「角色权限」Tab 点「应用到本部门所有人」强制覆盖。
+          </template>
+        </el-alert>
+
+        <div class="perm-drawer-actions">
+          <el-button size="small" @click="permDrawer.matrix = emptyMatrix()">全部清空</el-button>
+          <el-button size="small" @click="permDrawer.matrix = deptTemplateOf(permDrawer.member)">
+            套用部门模板
+          </el-button>
+          <span class="perm-drawer-count">
+            当前开放 {{ countEnabledModules(permDrawer.matrix) }} / 16 个模块
+          </span>
+        </div>
+
+        <PermissionMatrixEditor v-model="permDrawer.matrix" @change="permDrawer.dirty = true" />
+      </div>
+      <template #footer>
+        <el-button @click="permDrawer.show = false">取消</el-button>
+        <el-button type="primary" :loading="permDrawer.saving" :disabled="!permDrawer.dirty"
+                   @click="savePermDrawer">保存权限</el-button>
+      </template>
+    </el-drawer>
   </div>
 </template>
 
@@ -229,6 +273,8 @@ import { getTeamMembers, createTeamMember, updateTeamMember, getResourceMatrix, 
 import api from '../api/index.js'
 import ResourceHistogram from '../components/resource/ResourceHistogram.vue'
 import RolePermissionPanel from '../components/resource/RolePermissionPanel.vue'
+import PermissionMatrixEditor from '../components/resource/PermissionMatrixEditor.vue'
+import { countEnabledModules, emptyMatrix } from '../utils/permissionMatrix.js'
 
 const activeTab = ref('load')
 const resourceData = ref([])
@@ -266,40 +312,89 @@ const deptMatrixMap = computed(() => {
   return map
 })
 
-// 每个人员的权限来源：优先按所属部门的权限矩阵，未配置则沿用账号角色
+// 每个人员的权限来源。权限是**按人**的：账号自己那份矩阵说了算，
+// 部门只是模板。所以这里最关键的信息是「有没有被单独配过」——
+// 因为只有配过的人会被「应用到本部门所有人」覆盖掉。
 function permSource(row) {
-  const dept = (row.department || '').trim()
-  if (dept) {
-    const m = deptMatrixMap.value[dept]
-    if (m && m.count > 0) {
-      return {
-        type: 'dept',
-        cls: 'tag-blue',
-        label: `部门矩阵·${m.count} 个模块`,
-        tip: `权限按部门「${dept}」的矩阵计算，可访问：${m.modules.join('、')}`,
-      }
-    }
-    if (m) {
-      return {
-        type: 'dept-unset',
-        cls: 'tag-orange',
-        label: '部门矩阵未配置',
-        tip: `部门「${dept}」尚未配置权限矩阵，权限暂沿用账号角色；可在「角色权限」Tab 为该部门勾选矩阵`,
-      }
-    }
+  const u = getUserForMember(row)
+  if (!u) {
+    return { type: 'none', cls: 'tag-gray', label: '未关联账号',
+             tip: '该人员还没有登录账号。先创建账号，才能给他配权限。' }
+  }
+  if (u.is_active === false) {
+    return { type: 'inactive', cls: 'tag-gray', label: '账号已停用',
+             tip: '账号已停用，权限不生效。' }
+  }
+  if (u.perm_source === 'manual') {
+    const n = countEnabledModules(u.permissions)
     return {
-      type: 'role',
-      cls: 'tag-gray',
-      label: '沿用角色权限',
-      tip: `所属部门「${dept}」未在「角色权限」Tab 中配置，权限沿用账号角色`,
+      type: 'manual',
+      cls: 'tag-green',
+      label: `已单独配置·${n} 个模块`,
+      tip: `这个账号的权限是单独配的，开放了 ${n} 个模块（不再跟部门模板走）。`
+         + `点「权限」可修改，改完即时生效、不用重新登录；`
+         + `注意「应用到本部门所有人」会覆盖掉这份配置。`,
     }
   }
-  const u = getUserForMember(row)
+  const dept = (row.department || '').trim()
+  const m = dept ? deptMatrixMap.value[dept] : null
+  if (m && m.count > 0) {
+    return {
+      type: 'dept',
+      cls: 'tag-blue',
+      label: `随部门模板·${m.count} 个模块`,
+      tip: `权限来自部门「${dept}」的模板，可访问：${m.modules.join('、')}。`
+         + `改部门模板不会自动改到这里，需要在「角色权限」Tab 点「应用到本部门所有人」下发。`,
+    }
+  }
   return {
     type: 'role',
-    cls: 'tag-gray',
-    label: '沿用角色权限',
-    tip: u ? `未设置部门，权限沿用账号角色「${roleLabel(u.role)}」` : '未设置部门且未关联账号',
+    cls: 'tag-orange',
+    label: '未单独配置',
+    tip: dept
+      ? `部门「${dept}」还没配模板，权限暂按账号角色「${roleLabel(u.role)}」兜底。`
+      : `未设置部门，权限暂按账号角色「${roleLabel(u.role)}」兜底。`,
+  }
+}
+
+// ── 单个账号的权限抽屉（按人配置） ──
+const permDrawer = reactive({ show: false, member: null, user: null, matrix: {}, dirty: false, saving: false })
+const permDrawerTitle = computed(() => permDrawer.member
+  ? `配置权限 · ${permDrawer.member.name}` : '配置权限')
+
+function openPermDrawer(row) {
+  const u = getUserForMember(row)
+  if (!u) { ElMessage.warning('该人员还没有账号，请先创建账号'); return }
+  permDrawer.member = row
+  permDrawer.user = u
+  // 以他**当前生效**的矩阵为起点：已单独配过就是那份，否则是部门模板/角色兜底。
+  // 后端 list_users 返回的 permissions 已经是补全过的完整 16×5，直接用。
+  permDrawer.matrix = JSON.parse(JSON.stringify(u.permissions || emptyMatrix()))
+  permDrawer.dirty = false
+  permDrawer.show = true
+}
+
+/** 该人员所属部门的模板矩阵（没有就退回全空的矩阵）。 */
+function deptTemplateOf(member) {
+  const name = (member?.department || '').trim()
+  const d = departments.value.find(x => x.name === name)
+  return d?.permissions ? JSON.parse(JSON.stringify(d.permissions)) : emptyMatrix()
+}
+
+async function savePermDrawer() {
+  if (!permDrawer.user) return
+  permDrawer.saving = true
+  try {
+    await api.put(`/auth/users/${permDrawer.user.id}`, { permissions: permDrawer.matrix })
+    ElMessage.success('权限已保存，即时生效')
+    permDrawer.show = false
+    // loadUsers 而不是 loadAll：列表的「权限来源」列读的是 users 里的 perm_source，
+    // 不重拉的话保存完标签还是旧的那一个。
+    await loadUsers()
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '保存失败')
+  } finally {
+    permDrawer.saving = false
   }
 }
 
@@ -319,7 +414,8 @@ const filteredMembers = computed(() => {
     (m.name || '').toLowerCase().includes(kw) || (m.department || '').toLowerCase().includes(kw))
 })
 const accountCount = computed(() => members.value.filter(m => getUserForMember(m)).length)
-const deptPermCount = computed(() => members.value.filter(m => permSource(m).type === 'dept').length)
+// 单独配过权限的人数——就是「一键下发」会覆盖掉的那些，所以单独摆出来
+const manualPermCount = computed(() => members.value.filter(m => permSource(m).type === 'manual').length)
 const noDeptCount = computed(() => members.value.filter(m => !(m.department || '').trim()).length)
 
 const overloadedCount = computed(() => resourceData.value.filter(r => r.is_overloaded).length)
@@ -547,4 +643,14 @@ async function onPermSaved() {
   font-size:14px; font-weight:600; flex-shrink:0;
   display:flex; align-items:center; justify-content:center;
 }
+.perm-drawer { padding-bottom: 8px; }
+.perm-drawer-head {
+  display:flex; align-items:center; justify-content:space-between; gap:12px;
+}
+.perm-drawer-name { font-size:15px; font-weight:700; color:var(--text); }
+.perm-drawer-sub { font-size:12px; color:var(--text-muted); margin-top:2px; }
+.perm-drawer-actions {
+  display:flex; align-items:center; gap:8px; margin:4px 0 10px;
+}
+.perm-drawer-count { font-size:12px; color:var(--text-muted); margin-left:auto; }
 </style>

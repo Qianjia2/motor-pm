@@ -13,6 +13,7 @@ from backend_v2.auth import (
 )
 from backend_v2.permissions import (
     ACTIONS, MODULES, MODULE_LABELS, normalize_legacy_permissions, require_permission,
+    resolve_new_user_matrix, validate_matrix,
 )
 from backend_v2.schemas import LoginRequest, RegisterRequest, TokenResponse
 from backend_v2.models import Department, PermissionRole, UserAuth
@@ -170,16 +171,6 @@ def _role_dict(pr: PermissionRole, user_count: int) -> dict:
     }
 
 
-def _validate_matrix(raw) -> dict:
-    """矩阵校验：normalize 补全为完整 8 模块布尔矩阵。"""
-    matrix = normalize_legacy_permissions(raw)
-    for m in MODULES:
-        for a in ACTIONS:
-            if not isinstance(matrix[m].get(a), bool):
-                matrix[m][a] = bool(matrix[m].get(a, False))
-    return matrix
-
-
 @router.get("/users")
 def list_users(db: Session = Depends(get_db), _user=Depends(require_permission("users", "view"))):
     rows = db.execute(select(UserAuth).order_by(UserAuth.id)).scalars().all()
@@ -187,7 +178,8 @@ def list_users(db: Session = Depends(get_db), _user=Depends(require_permission("
     return [{
         "id": u.id, "username": u.username, "role": u.role,
         "role_id": u.role_id, "role_name": role_names.get(u.role_id),
-        "permissions": u.permissions or "{}",
+        "permissions": normalize_legacy_permissions(u.permissions),
+        "perm_source": u.perm_source,
         "is_active": u.is_active, "kb_admin": bool(u.kb_admin),
         "last_login": (u.last_login.isoformat() + "Z") if u.last_login else None,
         "created_at": u.created_at.isoformat() if u.created_at else None,
@@ -230,18 +222,12 @@ def create_user(data: dict, db: Session = Depends(get_db), _user=Depends(require
         ).scalar_one_or_none()
         if pr:
             role_id = pr.id
-    raw = data.get("permissions", {})
-    parsed = raw if isinstance(raw, dict) else {}
-    if isinstance(raw, str):
-        try:
-            parsed = json.loads(raw)
-        except Exception:
-            parsed = {}
-    if not isinstance(parsed, dict):
-        parsed = {}
-    perms = json.dumps(parsed, ensure_ascii=False)
     member_id = data.get("member_id")
     kb_admin = bool(data.get("kb_admin", False))
+    # 个人权限：显式带了算人工配置，否则套所属部门模板（见 resolve_new_user_matrix）。
+    # perm_source 一定要落值——启动回填靠 `perm_source IS NULL` 判断「早于本次改造、
+    # 需要固化」,建号时不落值下次重启会把新账号也冻住,之后改角色就不生效了。
+    perms, perm_source = resolve_new_user_matrix(db, member_id, data.get("permissions"))
 
     existing = db.execute(select(UserAuth).where(UserAuth.username == username)).scalar_one_or_none()
     member_holder = None
@@ -262,6 +248,7 @@ def create_user(data: dict, db: Session = Depends(get_db), _user=Depends(require
         candidate.role = role
         candidate.role_id = int(role_id) if role_id else None
         candidate.permissions = perms
+        candidate.perm_source = perm_source
         candidate.member_id = int(member_id) if member_id else None
         candidate.kb_admin = kb_admin
         candidate.is_active = True
@@ -271,7 +258,8 @@ def create_user(data: dict, db: Session = Depends(get_db), _user=Depends(require
     u = UserAuth(
         username=username, password_hash=hash_password(password),
         role=role, role_id=int(role_id) if role_id else None,
-        permissions=perms, member_id=int(member_id) if member_id else None,
+        permissions=perms, perm_source=perm_source,
+        member_id=int(member_id) if member_id else None,
         kb_admin=kb_admin,
     )
     db.add(u)
@@ -319,16 +307,10 @@ def update_user(user_id: int, data: dict, db: Session = Depends(get_db), _user=D
     if "password" in data and data["password"]:
         u.password_hash = hash_password(data["password"])
     if "permissions" in data:
-        raw = data["permissions"]
-        parsed = raw if isinstance(raw, dict) else {}
-        if isinstance(raw, str):
-            try:
-                parsed = json.loads(raw)
-            except Exception:
-                parsed = {}
-        if not isinstance(parsed, dict):
-            parsed = {}
-        u.permissions = json.dumps(parsed, ensure_ascii=False)
+        # 人工在 UI 里配的：校验成完整 16×5 矩阵并标记来源，
+        # 免得下次启动回填把这份手改的权限当成改造前的旧数据覆盖掉。
+        u.permissions = json.dumps(validate_matrix(data["permissions"]), ensure_ascii=False)
+        u.perm_source = "manual"
     if "kb_admin" in data:
         u.kb_admin = bool(data["kb_admin"])
     db.commit()
@@ -378,7 +360,7 @@ def create_permission_role(data: dict, db: Session = Depends(get_db), _user=Depe
     ).scalar_one_or_none()
     if dup:
         raise HTTPException(status_code=400, detail="该部门下已存在同名角色")
-    matrix = _validate_matrix(data.get("permissions"))
+    matrix = validate_matrix(data.get("permissions"))
     code = f"c{int(dept_id)}_{_secrets.token_hex(3)}"
     pr = PermissionRole(
         name=name, code=code, dept_id=int(dept_id),
@@ -409,7 +391,7 @@ def update_permission_role(role_id: int, data: dict, db: Session = Depends(get_d
     if "desc" in data:
         pr.desc = (data.get("desc") or "")[:256]
     if "permissions" in data:
-        matrix = _validate_matrix(data["permissions"])
+        matrix = validate_matrix(data["permissions"])
         if pr.is_builtin and pr.code == "admin":
             # 防锁死：内置管理员的 users 模块强制全开
             matrix["users"] = {a: True for a in ACTIONS}

@@ -1,5 +1,18 @@
-"""角色权限功能前端回归测试（Playwright）"""
-import sys, os, json, time
+"""角色（分组标签）与权限面板前端回归测试（Playwright）
+
+2026-09-11 重写。原版写的是一套已经不存在的 DOM——左侧「4 个内置角色」、
+`.rp-dept-row`、`.rp-right .card:nth-of-type(2)` 里的 8 行矩阵——那是权限还挂在
+角色上时期的界面；后来权限挪到部门矩阵时这个脚本就死了，本次「按人」改造只是
+又往前推了一步。按「已有的先都不删」的约定不删文件，改成测**今天真实存在**的语义：
+
+- 角色 = 人员分组标签，不参与权限计算（面板文案也是这么写的）
+- 左侧是「部门 > 角色」两级导航
+- 选中角色时，右边显示的矩阵是它**所属部门**的矩阵（角色自己没有矩阵）
+- 角色 CRUD（建/改说明/删）
+
+矩阵本身、按人配置、一键下发在 ui_dept_perms_regression.py 里测，这里不重复。
+"""
+import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from playwright.sync_api import sync_playwright
 
@@ -7,11 +20,13 @@ BASE = "http://localhost:5002"
 ok = True
 results = []
 
+
 def check(name, cond, detail=""):
     global ok
     results.append((name, cond, detail))
     print(f"{'PASS' if cond else 'FAIL'}  {name}  {detail}")
     if not cond: ok = False
+
 
 def login(page, username="admin", password="admin123"):
     page.goto(BASE + "/login")
@@ -21,6 +36,7 @@ def login(page, username="admin", password="admin123"):
     page.keyboard.press("Enter")
     page.wait_for_timeout(2500)
     return page.url
+
 
 with sync_playwright() as p:
     browser = p.chromium.launch()
@@ -32,144 +48,117 @@ with sync_playwright() as p:
     page.on("pageerror", lambda e: errors.append(str(e)))
     page.on("response", lambda r: bad_responses.append(r.url) if r.status >= 400 else None)
 
-    # ── 1. 登录并进入资源管理 ──
+    # ── 1. 登录并进入资源管理 → 角色权限 ──
     login(page)
     check("登录成功进入系统", "/login" not in page.url, page.url)
     page.goto(BASE + "/resources")
     page.wait_for_load_state("networkidle")
     page.wait_for_timeout(1500)
-
-    # ── 2. 第三个 Tab「角色权限」存在 ──
     tabs = page.locator(".el-tabs__item").all_text_contents()
     check("资源管理有 3 个 Tab（含角色权限）", any("角色权限" in t for t in tabs), str(tabs))
-
-    # ── 3. 点击角色权限 Tab ──
     page.locator(".el-tabs__item", has_text="角色权限").click()
     page.wait_for_timeout(1500)
-    left = page.locator(".rp-left").first
-    check("左侧部门-角色导航出现", left.is_visible(), "")
-    nav_items = page.locator(".rp-nav-item").all_text_contents()
-    builtin_names = [x.strip() for x in nav_items]
-    check("左侧含 4 个内置角色", len(builtin_names) >= 4, str(builtin_names[:8]))
-    dept_rows = page.locator(".rp-dept-row").all_text_contents()
-    check("左侧含部门分组", len(dept_rows) >= 1, f"dept rows={len(dept_rows)}")
+    check("左侧部门导航出现", page.locator(".rp-left").first.is_visible(), "")
+    nav_items = [x.strip() for x in page.locator(".rp-nav-item").all_text_contents()]
+    check("左侧为部门分组（不再平铺内置角色）", len(nav_items) >= 4, str(nav_items[:8]))
+    check("左侧不出现内置角色名（管理员/查看者）",
+          not any("管理员" in t or "查看者" in t for t in nav_items), str(nav_items[:8]))
 
-    # ── 4. 默认选中内置 admin，users 行 disabled ──
-    page.wait_for_timeout(1200)
-    admin_locked = True
-    try:
-        # 权限矩阵表 = .rp-right 第 2 个 card 的 el-table（第 1 个是部门角色表）
-        mrows = page.locator(".rp-right .card:nth-of-type(2) .el-table__body-wrapper .el-table__row")
-        mrows.first.wait_for(state="visible", timeout=8000)
-        row_count = mrows.count()
-        check("权限矩阵渲染 8 行", row_count == 8, f"rows={row_count}")
-        # users 模块行（最后一行）checkbox disabled
-        last_row = mrows.nth(row_count - 1)
-        cb = last_row.locator(".el-checkbox").first
-        is_disabled = "is-disabled" in (cb.get_attribute("class") or "")
-        # projects 行（第一行）不禁用
-        proj_row = mrows.nth(0)
-        proj_disabled = "is-disabled" in (proj_row.locator(".el-checkbox").first.get_attribute("class") or "")
-        check("admin 角色 users 行锁定、projects 行可勾", is_disabled and not proj_disabled, f"users_locked={is_disabled} projects_disabled={proj_disabled}")
-    except Exception as e:
-        check("admin users 行锁定检查", False, str(e)[:120])
-
-    # ── 5. 创建部门 ──
+    # ── 2. 建部门 + 建角色 ──
     dname = "回归部门" + os.urandom(2).hex()
     page.locator(".rp-left .card-header .el-button", has_text="新增部门").click()
     page.wait_for_timeout(600)
     page.locator(".el-dialog input").fill(dname)
     page.locator(".el-dialog .el-button--primary", has_text="保存").click()
     page.wait_for_timeout(1500)
-    dept_texts = page.locator(".rp-dept-row").all_text_contents()
-    check("创建部门成功且显示", any(dname in t for t in dept_texts), str(dept_texts[-3:]))
+    check("创建部门成功且显示", any(dname in t for t in page.locator(".rp-nav-item").all_text_contents()),
+          str(page.locator(".rp-nav-item").all_text_contents()[-3:]))
 
-    # ── 6. 在该部门下创建角色 ──
-    # 点击新部门的名字（span）选中该部门组
-    page.locator(".rp-dept-row", has_text=dname).locator("span").first.click()
+    page.locator(".rp-nav-item", has_text=dname).click()
     page.wait_for_timeout(800)
-    page.locator(".rp-right .card .card-header .el-button", has_text="新增角色").click()
+    page.locator(".rp-right .card-header .el-button", has_text="新增角色").click()
     page.wait_for_timeout(600)
-    dialogs = page.locator(".el-dialog:visible")
     rname = "回归角色" + os.urandom(2).hex()
-    # 名称输入
-    dialogs.locator("input").nth(0).fill(rname)
-    # 保存
-    dialogs.locator(".el-button--primary", has_text="保存").click()
+    dlg = page.locator(".el-dialog:visible")
+    dlg.locator("input").nth(0).fill(rname)
+    dlg.locator("input").nth(2).fill("权限配置：回归测试用的分组标签")
+    dlg.locator(".el-button--primary", has_text="保存").click()
     page.wait_for_timeout(1500)
-    nav_texts = page.locator(".rp-nav-item").all_text_contents()
-    check("部门角色创建成功且出现在左侧", any(rname in t for t in nav_texts), f"nav has {rname}: {any(rname in t for t in nav_texts)}")
+    role_items = [x.strip() for x in page.locator(".rp-left .rp-role-item").all_text_contents()]
+    check("角色创建成功且挂在部门下（左侧缩进项）", any(rname in t for t in role_items), str(role_items[:3]))
+    badge = page.locator(".rp-nav-item", has_text=dname).locator(".rp-nav-badge").inner_text()
+    check("部门徽标显示角色数=1", "1" in badge, badge)
 
-    # ── 7. 勾选权限矩阵并保存 ──
-    page.wait_for_timeout(800)
-    # 选中刚创建的角色
-    page.locator(".rp-nav-item", has_text=rname).click()
-    page.wait_for_timeout(1000)
-    # 权限矩阵表（第 2 个 card）
-    mrows = page.locator(".rp-right .card:nth-of-type(2) .el-table__body-wrapper .el-table__row")
+    # ── 3. 选中角色 → 说明卡片+所属部门；右侧矩阵是**部门**的矩阵 ──
+    page.locator(".rp-role-item", has_text=rname).click()
+    page.wait_for_timeout(1200)
+    desc = page.locator(".rp-desc").inner_text()
+    check("说明卡片显示选中角色名", rname in desc, desc.replace("\n", " | ")[:120])
+    check("说明卡片显示所属部门", dname in desc, "")
+    check("说明卡片写明角色不参与权限计算", "不参与权限计算" in desc, "")
+    right_title = page.locator(".rp-right .card-title").first.inner_text()
+    check("右侧矩阵标题是「权限设置：<部门>」而非角色名",
+          dname in right_title and rname not in right_title, right_title)
+
+    # ── 4. 改角色说明 ──
+    page.locator(".rp-desc-role-head .el-button", has_text="编辑").click()
+    page.wait_for_timeout(700)
+    dlg = page.locator(".el-dialog:visible")
+    dlg.locator("input").nth(2).fill("权限配置：改过的说明文案")
+    dlg.locator(".el-button--primary", has_text="保存").click()
+    page.wait_for_timeout(1500)
+    check("角色说明更新成功", "改过的说明文案" in page.locator(".rp-desc").inner_text(),
+          page.locator(".rp-desc").inner_text().replace("\n", " | ")[:120])
+
+    # ── 5. 角色说明只占分组标签，不影响部门矩阵：勾一个模块并保存，角色说明不变 ──
+    mrows = page.locator(".rp-right .card:nth-of-type(1) .el-table__body-wrapper .el-table__row")
     mrows.first.wait_for(state="visible", timeout=8000)
-    # projects 行勾选 查看/新建/编辑/导出（跳过删除）
-    proj = mrows.nth(0)
-    cbs = proj.locator(".el-checkbox")
-    # 列顺序: 模块名, 查看, 新建, 编辑, 删除, 导出 → checkbox 索引 0..4
-    for i in [0, 1, 2, 4]:  # view create edit export
-        cb = cbs.nth(i)
-        if not cb.locator("input").is_checked():
-            cb.click()
-            page.wait_for_timeout(150)
-    # bom 行勾选 查看
-    bom = mrows.nth(1)
-    bom_cb = bom.locator(".el-checkbox").nth(0)
-    if not bom_cb.locator("input").is_checked():
-        bom_cb.click()
-        page.wait_for_timeout(150)
-    page.wait_for_timeout(500)
-    # 保存矩阵
+    check("矩阵仍为 16 行", mrows.count() == 16, f"rows={mrows.count()}")
+    proj_cb = mrows.nth(5).locator(".el-checkbox").nth(0)
+    if not proj_cb.locator("input").is_checked():
+        proj_cb.click()
+        page.wait_for_timeout(200)
     save_btn = page.locator(".rp-right .card-header .el-button--primary", has_text="保存矩阵")
-    check("保存矩阵按钮可用（dirty）", save_btn.is_enabled())
+    check("保存矩阵按钮可用", save_btn.is_enabled(), "")
     save_btn.click()
     page.wait_for_timeout(1500)
     msg = page.locator(".el-message").all_text_contents() if page.locator(".el-message").count() else []
-    check("矩阵保存成功提示", any("已保存" in m for m in msg), str(msg))
+    check("部门矩阵保存成功", any("已保存" in m for m in msg), str(msg))
+    check("保存矩阵不影响角色说明", "改过的说明文案" in page.locator(".rp-desc").inner_text(), "")
 
-    # ── 8. 刷新后矩阵仍在 ──
+    # ── 6. 刷新后角色仍在 ──
     page.reload()
     page.wait_for_load_state("networkidle")
     page.wait_for_timeout(1200)
     page.locator(".el-tabs__item", has_text="角色权限").click()
     page.wait_for_timeout(1500)
-    page.locator(".rp-nav-item", has_text=rname).click()
-    page.wait_for_timeout(1000)
-    mrows = page.locator(".rp-right .card:nth-of-type(2) .el-table__body-wrapper .el-table__row")
-    mrows.first.wait_for(state="visible", timeout=8000)
-    proj = mrows.nth(0)
-    cbs = proj.locator(".el-checkbox")
-    states = [cbs.nth(i).locator("input").is_checked() for i in range(5)]
-    check("刷新后矩阵保持（projects: view+create+edit+export）", states == [True, True, True, False, True], str(states))
-    bom_states = [mrows.nth(1).locator(".el-checkbox").nth(i).locator("input").is_checked() for i in range(5)]
-    check("刷新后 bom 仅 view", bom_states[0] and not any(bom_states[1:]), str(bom_states))
+    roles_after = [x.strip() for x in page.locator(".rp-left .rp-role-item").all_text_contents()]
+    check("刷新后角色仍在左侧", any(rname in t for t in roles_after), str(roles_after[:3]))
 
-    # ── 9. members Tab 回归 ──
-    page.locator(".el-tabs__item", has_text="人员与账号").click()
-    page.wait_for_timeout(1200)
-    body_text = page.locator("body").inner_text()
-    check("members Tab 无角色权限说明卡片", "角色权限说明" not in body_text, "")
-    # 打开第一个成员的编辑对话框
-    edit_btn = page.locator("button", has_text="编辑").first
-    edit_btn.click()
-    page.wait_for_timeout(800)
-    dialog = page.locator(".el-dialog:visible")
-    dtext = dialog.inner_text()
-    cb_count = dialog.locator(".el-checkbox").count()
-    check("成员对话框无权限勾选 UI（个人矩阵已移除）", cb_count == 0, f"checkbox_count={cb_count}")
-    check("成员对话框含权限继承说明", "账号权限" in dtext, "")
-    # 部门字段是 select
+    # ── 7. 删角色 ──
+    page.locator(".rp-role-item", has_text=rname).hover()
     page.wait_for_timeout(400)
-    check("成员对话框含部门下拉", "部门" in dtext, "")
-    dialog.locator(".el-dialog__headerbtn").click()
-    page.wait_for_timeout(500)
+    page.locator(".rp-role-item", has_text=rname).locator("button", has_text="删").first.click()
+    page.wait_for_timeout(600)
+    page.locator(".el-popconfirm .el-button--primary, .el-popper .el-button--primary").last.click()
+    page.wait_for_timeout(1500)
+    roles_final = [x.strip() for x in page.locator(".rp-left .rp-role-item").all_text_contents()]
+    check("角色删除成功", not any(rname in t for t in roles_final), str(roles_final[:3]))
 
-    # ── 10. JS 错误检查（忽略既有 /api/ai/config 401 轮询，与本次改动无关）──
+    # ── 8. 删部门（跑完自己清干净）──
+    # 必须放在删角色之后：部门下还挂着角色时后端会 409。
+    # 残留部门不是「无所谓的垃圾」——SQLite 会复用 rowid，上一轮残留的部门 id
+    # 会被下一轮新建的部门拿到，挂在它下面的旧角色就把计数断言污染了。
+    page.locator(".rp-nav-item", has_text=dname).hover()
+    page.wait_for_timeout(400)
+    page.locator(".rp-nav-item", has_text=dname).locator("button", has_text="删").first.click()
+    page.wait_for_timeout(600)
+    page.locator(".el-popconfirm .el-button--primary, .el-popper .el-button--primary").last.click()
+    page.wait_for_timeout(1500)
+    nav_final = [x.strip() for x in page.locator(".rp-nav-item").all_text_contents()]
+    check("部门删除成功", not any(dname in t for t in nav_final), str(nav_final[:4]))
+
+    # ── 9. JS 错误检查（忽略既有 /api/ai/config 401 轮询，与本次改动无关）──
     real_errors = [e for e in errors if "Failed to load resource" not in e]
     bad_others = [u for u in bad_responses if "ai/config" not in u]
     check("无 JS 报错", len(real_errors) == 0, str(real_errors[:5]))
@@ -177,6 +166,6 @@ with sync_playwright() as p:
 
     browser.close()
 
-print("\n=== 前端回归", "全部通过" if ok else "存在失败项", "===")
-print("创建的测试数据：部门=%s 角色=%s（保留用于人工检查，可从 UI 删除）" % (dname, rname))
+print("\n=== 角色（分组标签）前端回归", "全部通过" if ok else "存在失败项", "===")
+print("测试数据：部门=%s 角色=%s（跑完已自行清理）" % (dname, rname))
 sys.exit(0 if ok else 1)

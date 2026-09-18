@@ -184,6 +184,11 @@ export const getPermissionRoles = () => api.get('/auth/permission-roles')
 export const createPermissionRole = (data) => api.post('/auth/permission-roles', data)
 export const updatePermissionRole = (id, data) => api.put(`/auth/permission-roles/${id}`, data)
 export const deletePermissionRole = (id) => api.delete(`/auth/permission-roles/${id}`)
+/** 把部门矩阵下发给本部门所有人的账号；dryRun=true 只拿名单不改数据 */
+export const applyDepartmentPermissions = (id, permissions, dryRun = false) =>
+  api.post(`/departments/${id}/apply-to-members`, { permissions, dry_run: dryRun })
+/** 单独给某个账号配权限（来源标记为 manual） */
+export const updateUserPermissions = (id, permissions) => api.put(`/auth/users/${id}`, { permissions })
 
 export default api
 

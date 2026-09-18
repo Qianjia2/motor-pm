@@ -14,7 +14,7 @@
     </el-table-column>
     <el-table-column label="项目经理" width="110">
       <template #default="{ row }">
-        <span v-if="row.pm" class="t-pm link" @click.stop="goTab(row, 'team')">{{ row.pm }}</span>
+        <span v-if="row.pm" class="t-pm link" title="项目团队（概览）" @click.stop="goTab(row, 'overview')">{{ row.pm }}</span>
         <span v-else class="t-muted">—</span>
       </template>
     </el-table-column>

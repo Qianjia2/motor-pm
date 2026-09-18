@@ -128,6 +128,14 @@ const routes = [
     meta: { title: '我的工作台' }
   },
   {
+    // 跨项目的项目工作流。别叫「我的工作台」——/my-work 已经占了这个名字,
+    // 两个同名入口会让人分不清哪个是哪个。
+    path: '/project-workflow',
+    name: 'ProjectWorkflowPage',
+    component: () => import('./pages/WorkflowPage.vue'),
+    meta: { title: '项目工作流' }
+  },
+  {
     path: '/training',
     name: 'Training',
     component: () => import('./pages/TrainingPage.vue'),

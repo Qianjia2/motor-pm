@@ -32,6 +32,8 @@ class ClientCommunication(Base):
     id = Column(Integer, primary_key=True)
     client_id = Column(Integer, ForeignKey("client.id"), nullable=False)
     client = relationship("Client")
+    project_id = Column(Integer, ForeignKey("project.id"), nullable=True)   # 关联项目(可选)
+    project = relationship("Project")
     comm_date = Column(Date)              # 沟通日期
     comm_type = Column(String(32))        # 电话/邮件/拜访/微信/会议/其他
     subject = Column(String(128))         # 沟通主题
@@ -583,6 +585,10 @@ class UserAuth(Base):
     role = Column(String(16), default="member")
     role_id = Column(Integer, ForeignKey("permission_role.id"))
     permissions = Column(Text, default="{}")
+    # 个人权限矩阵的来源：NULL=未初始化(待启动回填) / 'dept'=来自部门模板 / 'manual'=人工单独配置。
+    # 只服务于 UI 展示和「一键下发」的覆盖提示——权限判定本身只看 permissions 有没有内容，
+    # 不依赖这一列（见 permissions.is_configured）。
+    perm_source = Column(String(8))
     dingtalk_id = Column(String(128), unique=True)
     refresh_token = Column(String(256), unique=True)
     is_active = Column(Boolean, default=True)
@@ -1061,3 +1067,351 @@ class DeliverableAttachment(Base):
     deliverable = relationship("Deliverable", back_populates="attachments")
 
     __table_args__ = (Index("idx_deliv_att", "deliverable_id"),)
+
+
+class ProjectWorkflowStepConfirm(Base):
+    """项目工作流·线下步骤的人工确认。
+
+    平台观测不到线下动作(客户调研拜访、UAT、现场部署、客户培训、客户验收),
+    这些步骤的状态只能由人确认,本表就是那份留痕。
+
+    节点身份 = (阶段码, 阶段内序号): PHASE_NODES 的节点只存在于代码常量里,
+    没有数据库主键,身份只能由配置给出,所以唯一键用配置身份而非代理键。
+    用 phase_code 而不是 phase_id: 历史迁移改过 phase 的 id(见
+    scripts/migrate_software_phases_s0_s3.py),code 不变,否则迁移后确认记录会挂错阶段。
+    序号在同一阶段内唯一、跨阶段重复(每个阶段都有 seq=1),故必须带上阶段。
+    """
+    __tablename__ = "project_workflow_step_confirm"
+    id = Column(Integer, primary_key=True)
+    project_id = Column(Integer, ForeignKey("project.id"), nullable=False)
+    phase_id = Column(Integer, ForeignKey("phase.id"), nullable=False)  # 便于按阶段统计
+    phase_code = Column(String(16), nullable=False)
+    node_seq = Column(Integer, nullable=False)
+    node_name = Column(String(128))                # 确认时的节点名快照
+    confirmed_by = Column(String(64))              # 账号,风格同 gate_signoff_record.signed_by_username
+    confirmed_at = Column(DateTime, default=datetime.utcnow)
+    note = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "phase_code", "node_seq", name="uq_pwsc_step"),
+        Index("idx_pwsc_project", "project_id", "phase_id"),
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 工作流引擎（一期地基）
+#
+# 和既有 PHASE_NODES 的关系：PHASE_NODES 是项目级宏观流程（85 个步骤，
+# 硬编码在 routes/training_process.py），它是**模板层的素材**，不是被替换的
+# 对象——本次一行都没改。本引擎把它的每一步导入成 wf_state_def，补上标准
+# 状态语义、流转规则和按人权限。唯一衔接点 = phase_code / node_seq。
+#
+# 三层严格分开（需求明确要求，不要混成一个字段）：
+#   元模型/属性/工作流三者分离 → 状态定义(wf_state_def) 与 权限(wf_node_acl_def)
+#   与 流转(wf_transition_def) 各自成表，互不内嵌。
+#   模板层  wf_template / wf_template_version / wf_state_def /
+#           wf_transition_def / wf_node_acl_def
+#   项目层  project_wf_instance / project_wf_state /
+#           project_wf_transition / project_wf_node_acl
+#   台账    wf_state_change_log / wf_force_drag_log
+#
+# 为什么 subject_name 和 subject_id 两个都存：PHASE_NODES 用到 16 个角色名，
+# 其中 8 个（工艺工程师/技术负责人/管理层/试制负责人/采购/财务/责任工程师/
+# 市场运营）**在 role 表里根本不存在**。只存外键的话这 8 个角色名全丢，
+# 那些步骤会变成"除了管理员没人推得动"。所以按名字存是主，id 是能解析时的
+# 加速与改名追踪用。既有 _can_confirm_node 本来就是按名字匹配的，这里一致。
+# ══════════════════════════════════════════════════════════════════════
+
+
+class WfTemplate(Base):
+    """工作流模板（四类项目模板的载体）。
+
+    一期只落 A/B 两个（A=合同交付·电机电控集成 ↔ hardware，B=合同交付·软件
+    定制 ↔ software）。两者一一对应，所以 project 表**不需要新增任何列**——
+    项目选了哪个模板记在 project_wf_instance.template_id 上。以后加 C/D
+    （内部研发）只是插两行数据，不动表结构。
+    """
+    __tablename__ = "wf_template"
+    id = Column(Integer, primary_key=True)
+    code = Column(String(32), nullable=False, unique=True)
+    name = Column(String(64), nullable=False)
+    project_type = Column(String(16), nullable=False)     # hardware / software
+    category = Column(String(16), default="contract")     # contract=合同交付 / internal=内部研发
+    description = Column(Text)
+    sort_order = Column(Integer, default=0)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class WfTemplateVersion(Base):
+    """模板版本。升级不推送——项目实例停在自己记录的版本上，直到 PM 主动迁移。
+
+    版本一旦有项目实例在用就不改内容，改内容一律新建版本。这是"记录基于哪个
+    模板版本"能成立的前提：如果版本可原地改，"基于 v1"这句话就没有意义了。
+    """
+    __tablename__ = "wf_template_version"
+    id = Column(Integer, primary_key=True)
+    template_id = Column(Integer, ForeignKey("wf_template.id"), nullable=False)
+    version_no = Column(Integer, nullable=False)
+    status = Column(String(16), default="published")      # draft / published / archived
+    note = Column(Text)
+    created_by = Column(String(64))
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    template = relationship("WfTemplate", lazy="joined")
+    __table_args__ = (
+        UniqueConstraint("template_id", "version_no", name="uq_wftv_no"),
+        Index("idx_wftv_tpl", "template_id"),
+    )
+
+
+class WfStateDef(Base):
+    """模板层的状态节点定义。
+
+    state_code 在模板内稳定，形如 "PP1-3"/"S0-2"（阶段码-序号）。项目实例、
+    审计、自动化规则一律按 state_code 引用，**不按自增 id**——沿用
+    ProjectWorkflowStepConfirm 的教训：历史迁移改过 phase 的 id，code 不变。
+    """
+    __tablename__ = "wf_state_def"
+    id = Column(Integer, primary_key=True)
+    version_id = Column(Integer, ForeignKey("wf_template_version.id"), nullable=False)
+    state_code = Column(String(32), nullable=False)
+    name = Column(String(128), nullable=False)            # 显示别名，可改
+    semantic_state = Column(String(24), nullable=False)   # 七选一，不可自定义
+    phase_code = Column(String(16))                       # 衔接 PHASE_NODES
+    node_seq = Column(Integer)
+    lane = Column(String(32))                             # 泳道 = 阶段
+    sort_order = Column(Integer, default=0)
+    is_initial = Column(Boolean, default=False)
+    is_terminal = Column(Boolean, default=False)
+    is_gate = Column(Boolean, default=False)              # 阶段末位门禁节点
+    is_required = Column(Boolean, default=True)           # 跳过它要填原因（强制拖拽）
+    entry_condition = Column(Text)                        # JSON，不用 eval
+    exit_condition = Column(Text)                         # JSON
+    sla_hours = Column(Integer)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("version_id", "state_code", name="uq_wfsd_code"),
+        Index("idx_wfsd_ver", "version_id", "sort_order"),
+    )
+
+
+class WfTransitionDef(Base):
+    """模板层的流转规则：谁能从哪个状态走到哪个状态。
+
+    只登记"允许的边"，不登记"必经路径"——必经与否由 project_wf_state
+    .is_required + 强制拖拽的跳过检测算出来，避免两处定义打架。
+    """
+    __tablename__ = "wf_transition_def"
+    id = Column(Integer, primary_key=True)
+    version_id = Column(Integer, ForeignKey("wf_template_version.id"), nullable=False)
+    from_state_code = Column(String(32), nullable=False)
+    to_state_code = Column(String(32), nullable=False)
+    name = Column(String(64))
+    require_reason = Column(Boolean, default=False)       # 走这条边必须填原因
+    auto = Column(Boolean, default=False)                 # 由自动化引擎触发，人不直接点
+    sort_order = Column(Integer, default=0)
+
+    __table_args__ = (
+        Index("idx_wftd_ver", "version_id", "from_state_code"),
+    )
+
+
+class WfNodeAclDef(Base):
+    """模板层的节点权限默认值。
+
+    四类权限原子：can_enter（进入）/ can_exit（退出）/ can_edit_fields（编辑字段）
+    / can_force_drag（强制拖拽）。前三个**并集**（allow 胜），第四个**交集**
+    （deny 胜）且**永不继承**——强制拖拽是 PM 的超级权限，模板默认给谁就是谁，
+    不能因为"谁都没明确给"而落到某个宽泛的主体上。
+    """
+    __tablename__ = "wf_node_acl_def"
+    id = Column(Integer, primary_key=True)
+    version_id = Column(Integer, ForeignKey("wf_template_version.id"), nullable=False)
+    state_code = Column(String(32), nullable=False)
+    subject_type = Column(String(24), nullable=False)     # user / group / project_role / role_name
+    subject_name = Column(String(64), nullable=False)     # 按名字存，见模块头注释
+    subject_id = Column(Integer)                          # 能解析到 role.id 时填，解析不到为 NULL
+    can_enter = Column(Boolean, default=True)
+    can_exit = Column(Boolean, default=True)
+    can_edit_fields = Column(Boolean, default=True)
+    can_force_drag = Column(Boolean, default=False)
+    field_scope = Column(Text)                            # JSON 数组，空=全部字段
+
+    __table_args__ = (
+        UniqueConstraint("version_id", "state_code", "subject_type", "subject_name",
+                         name="uq_wfnad_key"),
+        Index("idx_wfnad_lookup", "version_id", "state_code"),
+    )
+
+
+class ProjectWfInstance(Base):
+    """项目层：一个项目挂到一个模板版本上的那次实例化。
+
+    base_version_id 和 current_version_id 分开记：
+      base    = 创建时基于哪个版本（"记录基于哪个模板版本"就是它，永不改）
+      current = 现在跑在哪个版本（迁移后才会变，与 base 不同即"已迁移过"）
+    两个都留，迁移差异才有比较对象。
+    """
+    __tablename__ = "project_wf_instance"
+    id = Column(Integer, primary_key=True)
+    project_id = Column(Integer, ForeignKey("project.id"), nullable=False, unique=True)
+    template_id = Column(Integer, ForeignKey("wf_template.id"), nullable=False)
+    base_version_id = Column(Integer, ForeignKey("wf_template_version.id"), nullable=False)
+    current_version_id = Column(Integer, ForeignKey("wf_template_version.id"), nullable=False)
+    status = Column(String(16), default="active")         # active / archived
+    created_by = Column(String(64))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    migrated_at = Column(DateTime)
+
+    template = relationship("WfTemplate", lazy="joined")
+
+
+class ProjectWfState(Base):
+    """项目层的状态节点。实例化时深拷贝模板，之后可由 PM 自由调整。
+
+    is_customized 是迁移时的冲突判据：模板新版和项目本地**两边都改过**的
+    状态，迁移时列出来让人决定，绝不自动合并。
+    """
+    __tablename__ = "project_wf_state"
+    id = Column(Integer, primary_key=True)
+    instance_id = Column(Integer, ForeignKey("project_wf_instance.id"), nullable=False)
+    state_code = Column(String(32), nullable=False)
+    name = Column(String(128), nullable=False)
+    semantic_state = Column(String(24), nullable=False)
+    phase_code = Column(String(16))
+    node_seq = Column(Integer)
+    lane = Column(String(32))
+    sort_order = Column(Integer, default=0)
+    is_initial = Column(Boolean, default=False)
+    is_terminal = Column(Boolean, default=False)
+    is_gate = Column(Boolean, default=False)
+    is_required = Column(Boolean, default=True)
+    entry_condition = Column(Text)
+    exit_condition = Column(Text)
+    sla_hours = Column(Integer)
+    # 运行态。引擎**持有**状态而不是每次从交付物现算——现算的话"强制拖拽把它
+    # 推到已完成"这件事根本表达不出来（交付物没批，现算永远算回未开始）。
+    # 既有 workflow 接口的推导逻辑保持不变，两者互不干扰。
+    runtime_status = Column(String(24), default="not_started")
+    status_source = Column(String(16), default="auto")   # auto=交付物推导 / manual=人推的 / force=强制拖拽
+    last_changed_at = Column(DateTime)
+    last_changed_by = Column(String(64))
+    is_customized = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("instance_id", "state_code", name="uq_pwst_code"),
+        Index("idx_pwst_inst", "instance_id", "sort_order"),
+    )
+
+
+class ProjectWfTransition(Base):
+    """项目层的流转规则（模板流转规则的实例副本，可 PM 调整）。"""
+    __tablename__ = "project_wf_transition"
+    id = Column(Integer, primary_key=True)
+    instance_id = Column(Integer, ForeignKey("project_wf_instance.id"), nullable=False)
+    from_state_code = Column(String(32), nullable=False)
+    to_state_code = Column(String(32), nullable=False)
+    name = Column(String(64))
+    require_reason = Column(Boolean, default=False)
+    auto = Column(Boolean, default=False)
+    is_customized = Column(Boolean, default=False)
+    sort_order = Column(Integer, default=0)
+
+    __table_args__ = (Index("idx_pwtd_inst", "instance_id", "from_state_code"),)
+
+
+class ProjectWfNodeAcl(Base):
+    """项目层的节点权限——**权限按人分配，就落在这张表**。
+
+    实例化时从 wf_node_acl_def 深拷贝，之后 PM 只改这里，模板不受影响。
+    subject_type='user' 时 subject_id = team_member.id，是按人的那一种。
+    """
+    __tablename__ = "project_wf_node_acl"
+    id = Column(Integer, primary_key=True)
+    instance_id = Column(Integer, ForeignKey("project_wf_instance.id"), nullable=False)
+    state_code = Column(String(32), nullable=False)
+    subject_type = Column(String(24), nullable=False)
+    subject_name = Column(String(64), nullable=False)
+    subject_id = Column(Integer)
+    can_enter = Column(Boolean, default=True)
+    can_exit = Column(Boolean, default=True)
+    can_edit_fields = Column(Boolean, default=True)
+    can_force_drag = Column(Boolean, default=False)
+    field_scope = Column(Text)
+    is_customized = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("instance_id", "state_code", "subject_type", "subject_name",
+                         name="uq_pwna_key"),
+        Index("idx_pwna_lookup", "instance_id", "state_code"),
+    )
+
+
+class WfStateChangeLog(Base):
+    """状态流转台账（含正常流转与强制拖拽的入口记录）。
+
+    与 AuditLog 分开：audit_log 是全局操作流水（给人看的"谁干了什么"），
+    这张表是工作流自己的台账，要支撑"这个状态在谁手上停过多久"这类查询，
+    字段结构不同，不硬塞进 audit_log 的 details JSON 里。
+    """
+    __tablename__ = "wf_state_change_log"
+    id = Column(Integer, primary_key=True)
+    project_id = Column(Integer, ForeignKey("project.id"), nullable=False)
+    instance_id = Column(Integer, ForeignKey("project_wf_instance.id"), nullable=False)
+    state_code = Column(String(32), nullable=False)       # 这次动作针对的状态
+    from_semantic = Column(String(24))
+    to_semantic = Column(String(24), nullable=False)
+    action = Column(String(16), nullable=False)           # enter / exit / advance / force_drag / revert
+    operator = Column(String(64), nullable=False)
+    operator_roles = Column(Text)                         # JSON 数组，动作发生时的角色快照
+    reason = Column(Text)
+    force_drag_log_id = Column(Integer)                   # 非空表示这次是强制拖拽
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_wfscl_proj", "project_id", "created_at"),
+        Index("idx_wfscl_state", "instance_id", "state_code"),
+    )
+
+
+class WfForceDragLog(Base):
+    """PM 强制拖拽的审计与回退台账（需求第 5 项）。
+
+    from_/to_ 两侧都存 code+name+semantic 的快照：状态定义以后会被 PM 改名
+    甚至删掉，审计要能独立复述"当时从哪拖到哪"，不能靠 join 现算。
+    """
+    __tablename__ = "wf_force_drag_log"
+    id = Column(Integer, primary_key=True)
+    project_id = Column(Integer, ForeignKey("project.id"), nullable=False)
+    instance_id = Column(Integer, ForeignKey("project_wf_instance.id"), nullable=False)
+    from_state_code = Column(String(32))
+    from_state_name = Column(String(128))
+    from_semantic = Column(String(24))
+    to_state_code = Column(String(32), nullable=False)
+    to_state_name = Column(String(128))
+    to_semantic = Column(String(24), nullable=False)
+    operator = Column(String(64), nullable=False)
+    operator_roles = Column(Text)                         # JSON 数组
+    reason = Column(Text)                                 # 跳过必经验证节点时必填
+    reason_required = Column(Boolean, default=False)      # 当时是否强制要求了原因
+    skipped_states = Column(Text)                         # JSON：[{code,name,semantic}, ...]
+    has_unrevertable = Column(Boolean, default=False)     # 是否跳过了不可回滚的动作
+    auto_backlog_created = Column(Boolean, default=False) # 是否已自动建补验证待办
+    is_reverted = Column(Boolean, default=False)
+    reverted_at = Column(DateTime)
+    reverted_by = Column(String(64))
+    superseded_by_id = Column(Integer)                    # 被后一次强制拖拽取代时指向新的那条
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "from_state_code", "to_state_code", "created_at",
+                         name="uq_wfdl_dedup"),
+        Index("idx_wfdl_proj", "project_id", "created_at"),
+    )

@@ -96,6 +96,7 @@
                 <p>名称：{{ project.client.name }}</p>
                 <p v-if="project.client.contact_person">联系人：{{ project.client.contact_person }} {{ project.client.contact_phone }}</p>
               </el-card>
+              <TeamRoster :project-id="pid" :project-type="project.project_type" style="margin-top:12px" @changed="syncMemberCount" />
             </el-col>
             <el-col :span="10">
               <CurrentStatus :project="project" />
@@ -128,11 +129,6 @@
         <template v-else-if="activeTab==='gantt'">
           <ProjectGantt :milestones="milestones" @changed="onGanttChanged" />
         </template>
-        <!-- Team -->
-        <template v-else-if="activeTab==='team'">
-          <div class="card-header mb-md"><span></span><el-button type="primary" size="small" @click="showAddMemberDialog=true"><el-icon><Plus /></el-icon> 添加成员</el-button></div>
-          <el-table :data="projectMembers" stripe><el-table-column prop="member.name" label="姓名" width="100" /><el-table-column label="项目角色" width="130"><template #default="{row}"><el-select v-model="row.role_id" size="small" @change="onRoleChange(row)" style="width:100%"><el-option v-for="r in roles" :key="r.id" :label="r.name" :value="r.id" /></el-select></template></el-table-column><el-table-column prop="member.title" label="职务" width="100" /><el-table-column prop="member.department" label="部门" width="130" /><el-table-column label="投入比例" width="150"><template #header><span style="display:inline-flex;align-items:center;gap:3px">投入比例<el-tooltip content="该成员在本项目投入的工作量占比（0~100%），100% 表示全职投入本项目，50% 表示一半时间投入。用于资源负载评估与人员调配参考。" placement="top"><el-icon style="cursor:help;color:var(--text-muted)"><QuestionFilled /></el-icon></el-tooltip></span></template><template #default="{row}"><el-slider v-model="row.allocation_pct" :min="0" :max="100" :marks="{0:'0',25:'25',50:'50',75:'75',100:'100'}" @change="onAllocationChange(row)" style="width:120px" /></template></el-table-column><el-table-column label="关键" width="90"><template #default="{row}"><el-switch v-model="row.is_key" size="small" @change="onMemberKeyChange(row)" /></template></el-table-column><el-table-column label="操作" width="70"><template #default="{row}"><el-popconfirm title="移除?" @confirm="removeMember(row)"><template #reference><el-button type="danger" link size="small">移除</el-button></template></el-popconfirm></template></el-table-column></el-table>
-        </template>
         <!-- Reports -->
         <template v-else-if="activeTab==='reports'">
           <template v-if="reportView==='form'"><div class="mb-md"><el-button @click="reportView='history'" size="small"><el-icon><List /></el-icon> 查看历史</el-button></div><WeeklyReportForm :project-id="pid" :report-data="editingReport" @submit="onReportSubmit" @cancel="reportView='history'" /></template>
@@ -155,7 +151,8 @@
           :phase-code="deliverablePhase"
           :current-member-id="auth.currentMemberId" :is-admin="auth.isAdmin"
           @refresh="loadRefData"
-          @goDeliverable="goTab('deliverables')" />
+          @goDeliverable="goTab('deliverables')"
+          @goGate="goTab('phases')" />
       </div>
     </div>
 
@@ -169,21 +166,6 @@
     <el-dialog v-model="milestoneDialogVisible" :title="editingMilestone ? '编辑里程碑' : '添加里程碑'" width="500px">
       <el-form :model="milestoneForm" label-width="100px"><el-form-item label="名称" required><el-input v-model="milestoneForm.name" /></el-form-item><el-row :gutter="12"><el-col :span="12"><el-form-item label="计划日期"><el-date-picker v-model="milestoneForm.planned_date" type="date" style="width:100%" value-format="YYYY-MM-DD" /></el-form-item></el-col><el-col :span="12"><el-form-item label="结束日期"><el-date-picker v-model="milestoneForm.planned_end_date" type="date" style="width:100%" value-format="YYYY-MM-DD" /></el-form-item></el-col></el-row><el-row :gutter="12"><el-col :span="12"><el-form-item label="实际开始"><el-date-picker v-model="milestoneForm.actual_date" type="date" style="width:100%" value-format="YYYY-MM-DD" /></el-form-item></el-col><el-col :span="12"><el-form-item label="实际结束"><el-date-picker v-model="milestoneForm.actual_end_date" type="date" style="width:100%" value-format="YYYY-MM-DD" /></el-form-item></el-col></el-row><el-row :gutter="12"><el-col :span="12"><el-form-item label="阶段"><el-select v-model="milestoneForm.phase_id" clearable style="width:100%"><el-option v-for="p in phases" :key="p.id" :label="p.name" :value="p.id" /></el-select></el-form-item></el-col><el-col :span="12"><el-form-item label="技术线"><el-select v-model="milestoneForm.line_id" clearable style="width:100%"><el-option v-for="l in lines" :key="l.id" :label="l.name" :value="l.id" /></el-select></el-form-item></el-col></el-row><el-row :gutter="12"><el-col :span="12"><el-form-item label="状态"><el-select v-model="milestoneForm.status" style="width:100%"><el-option label="待开始" value="pending" /><el-option label="进行中" value="in_progress" /><el-option label="已完成" value="completed" /></el-select></el-form-item></el-col><el-col :span="12"><el-form-item label="关键节点"><el-switch v-model="milestoneForm.is_key" /></el-form-item></el-col></el-row></el-form>
       <template #footer><el-button @click="milestoneDialogVisible=false">取消</el-button><el-button type="primary" @click="saveMilestone">保存</el-button></template>
-    </el-dialog>
-    <el-dialog v-model="showAddMemberDialog" title="添加项目成员" width="550px">
-      <el-form :model="addMemberForm" label-width="100px">
-        <el-form-item label="成员"><el-select v-model="addMemberForm.member_id" placeholder="选择成员" filterable style="width:100%"><el-option v-for="m in availableMembers" :key="m.id" :label="`${m.name} (${m.department})`" :value="m.id" /></el-select></el-form-item>
-        <el-form-item label="角色"><el-select v-model="addMemberForm.role_id" style="width:100%"><el-option v-for="r in roles" :key="r.id" :label="r.name" :value="r.id" /></el-select></el-form-item>
-        <el-form-item label="投入比例(%)"><el-input-number v-model="addMemberForm.allocation_pct" :min="0" :max="100" /><div style="font-size:11px;color:var(--text-muted);margin-top:4px">成员在本项目投入的工作量占比，100%=全职投入（默认），50%=一半时间投入，可随时在成员列表调整</div></el-form-item>
-        <el-form-item label="关键人员"><el-switch v-model="addMemberForm.is_key" /></el-form-item>
-        <el-form-item label="可访问阶段">
-          <el-checkbox-group v-model="addMemberForm.phase_ids">
-            <el-checkbox v-for="p in phases" :key="p.id" :label="p.id" :value="p.id" style="margin-right:12px">{{ p.name }}</el-checkbox>
-          </el-checkbox-group>
-          <div style="font-size:11px;color:var(--text-muted);margin-top:4px">留空=全部可见，勾选=仅可见指定阶段</div>
-        </el-form-item>
-      </el-form>
-      <template #footer><el-button @click="showAddMemberDialog=false">取消</el-button><el-button type="primary" @click="addMember">添加</el-button></template>
     </el-dialog>
 
     <!-- AI Import Preview Dialog -->
@@ -254,13 +236,12 @@
 import { ref, computed, reactive, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Edit, Plus, List, ArrowLeft, ArrowRight, QuestionFilled } from '@element-plus/icons-vue'
+import { Edit, Plus, List, ArrowLeft, ArrowRight } from '@element-plus/icons-vue'
 import api from '../api/index.js'
 import { currentProjectType } from '../stores/projectType.js'
 import {
   getProject, deleteProject, copyProject, getPhaseGates, updatePhaseGate,
   getMilestones, createMilestone, updateMilestone, deleteMilestone,
-  getProjectMembers, addProjectMember, updateProjectMember, removeProjectMember,
   getRisks, getChanges, getLines, getPhases, getRoles, getTeamMembers, getReports, createReport, updateReport,
 } from '../api/index.js'
 import StatusBadge from '../components/common/StatusBadge.vue'
@@ -271,6 +252,7 @@ import PhaseTreeView from '../components/project/PhaseTreeView.vue'
 import ProjectGantt from '../components/project/ProjectGantt.vue'
 import ReportGenerator from '../components/project/ReportGenerator.vue'
 import GoalSummary from '../components/project/GoalSummary.vue'
+import TeamRoster from '../components/project/TeamRoster.vue'
 import CurrentStatus from '../components/project/CurrentStatus.vue'
 import NextSteps from '../components/project/NextSteps.vue'
 import BlockerList from '../components/project/BlockerList.vue'
@@ -284,7 +266,10 @@ import ProjectDeliverableChecklist from '../components/project/ProjectDeliverabl
 import FinancialPanel from '../components/project/FinancialPanel.vue'
 import RequirementList from '../components/project/RequirementList.vue'
 import TaskTree from '../components/project/TaskTree.vue'
+import ClientCommPanel from '../components/project/ClientCommPanel.vue'
 import TestPanel from '../components/project/TestPanel.vue'
+import ProjectWorkflow from '../components/project/ProjectWorkflow.vue'
+import WfEngineBoard from '../components/project/WfEngineBoard.vue'
 import PrototypePanel from '../components/project/PrototypePanel.vue'
 import KanbanBoard from '../components/project/KanbanBoard.vue'
 import ProgressChart from '../components/project/ProgressChart.vue'
@@ -294,10 +279,10 @@ import { useAuthStore } from '../stores/auth.js'
 const route = useRoute(); const router = useRouter()
 const auth = useAuthStore()
 const pid = computed(() => Number(route.params.id))
-const KNOWN_TABS = ['overview','phases','milestones','gantt','team','reports','analytics','requirements','tasks','risks','changes','docs','deliverables','testing','prototype','finance','reportgen']
+const KNOWN_TABS = ['overview','workflow','wf-engine','phases','milestones','gantt','reports','analytics','requirements','tasks','risks','changes','docs','deliverables','testing','prototype','finance','reportgen','comms']
 const qTab = route.query.tab
 const loading = ref(true); const activeTab = ref(typeof qTab === 'string' && KNOWN_TABS.includes(qTab) ? qTab : 'overview')
-const activePhase = ref('P0'); const expandedPhases = ref(['all','deliverables','P0','PP1','PP2','PP3','PP4'])
+const activePhase = ref('P0'); const expandedPhases = ref(['workflow','all','deliverables','P0','PP1','PP2','PP3','PP4'])
 const deliverablePhase = ref(null) // 交付物矩阵下的阶段筛选(null=全部阶段)
 const currentPhaseName = computed(() => {
   const pg = flatGroups.value.find(g => g.id === activePhase.value)
@@ -310,8 +295,10 @@ const tabsConfig = ref([])
 
 async function loadConfig() {
   const type = project.value?.project_type || 'hardware'
-  try { const r = await api.get('/lookups/admin/project-phase-groups', { params: { project_type: type } }); phaseGroups.value = r.data||[] } catch(e) {}
-  try { const r = await api.get('/lookups/admin/project-tabs-config', { params: { project_type: type } }); tabsConfig.value = r.data||[] } catch(e) {}
+  // 带上 project_id:工作流那一组/页签是逐项目开放的(目前只有软件项目和金浪),
+  // 只看 project_type 会把入口发给没试点的项目,点进去是一片空白
+  try { const r = await api.get('/lookups/admin/project-phase-groups', { params: { project_type: type, project_id: pid.value } }); phaseGroups.value = r.data||[] } catch(e) {}
+  try { const r = await api.get('/lookups/admin/project-tabs-config', { params: { project_type: type, project_id: pid.value } }); tabsConfig.value = r.data||[] } catch(e) {}
 }
 
 // 树形组展平:子组放在父组位置,无子组的顶层组保持
@@ -360,7 +347,9 @@ const componentMap = {
   requirements: RequirementList, tasks: TaskTree, risks: RiskTable, changes: ChangeList,
   docs: ProjectDeliverableChecklist, deliverables: DeliverableMatrix, testing: TestPanel,
   prototype: PrototypePanel, finance: FinancialPanel, analytics: null,
-  gantt: ProjectGantt, reportgen: ReportGenerator,
+  gantt: ProjectGantt, reportgen: ReportGenerator, comms: ClientCommPanel,
+  workflow: ProjectWorkflow,
+  'wf-engine': WfEngineBoard,
 }
 function tabComponent(name) { return componentMap[name]||null }
 function goTab(name) { activeTab.value = name }
@@ -378,7 +367,7 @@ const milestoneGroups = computed(() => {
   })
   return [...map.values()].sort((a, b) => (a.key === 0 ? 1 : 0) - (b.key === 0 ? 1 : 0) || a.key - b.key)
 })
-const projectMembers = ref([]); const lines = ref([]); const phases = ref([]); const roles = ref([])
+const lines = ref([]); const phases = ref([]); const roles = ref([])
 const allMembers = ref([]); const openRisks = ref([]); const reports = ref([]); const riskItems = ref([]); const changeItems = ref([])
 const phaseView = ref('stepper'); const reportView = ref('history')
 const editingReport = ref(null); const selectedReport = ref(null)
@@ -394,15 +383,8 @@ const taskTree = ref([])
 const flatTasks = computed(() => { const r=[]; function walk(l){for(const t of l){r.push(t);if(t.children)walk(t.children)}};walk(taskTree.value);return r })
 async function loadTasks() { try { const r = await api.get(`/projects/${pid.value}/tasks`); taskTree.value = r.data||[] } catch(e){} }
 
-const availableMembers = computed(() => {
-  const assignedIds = new Set(projectMembers.value.map(pm => pm.member?.id || pm.member_id))
-  return allMembers.value.filter(m => !assignedIds.has(m.id))
-})
-const showAddMemberDialog = ref(false)
-const addMemberForm = ref({ member_id:null, role_id:null, allocation_pct:100, is_key:false, phase_ids:[] })
-
 onMounted(async () => {
-  const KNOWN_TABS = ['overview','phases','milestones','gantt','team','reports','analytics','requirements','tasks','risks','changes','docs','deliverables','testing','prototype','finance','reportgen']
+  const KNOWN_TABS = ['overview','workflow','wf-engine','phases','milestones','gantt','reports','analytics','requirements','tasks','risks','changes','docs','deliverables','testing','prototype','finance','reportgen','comms']
   const qTab = route.query.tab
   if (qTab && KNOWN_TABS.includes(String(qTab))) activeTab.value = String(qTab)
   try {
@@ -413,7 +395,7 @@ onMounted(async () => {
     currentProjectType.value = projRes.data.project_type || 'hardware'
     await loadConfig()  // 需要 project_type 已就绪再加载阶段组/tab 配置
     lines.value = linesRes.data
-    // 阶段下拉只显示本项目类型的阶段(软件项目用 S0-S4)
+    // 阶段下拉只显示本项目类型的阶段(软件项目用 S0-S3)
     const projType = project.value.project_type || 'hardware'
     if (projType === 'software') {
       phases.value = phasesRes.data.filter(p => p.project_type === 'software')
@@ -423,7 +405,6 @@ onMounted(async () => {
     // Load milestones separately
     try { milestones.value = (await getMilestones(pid.value)).data||[] } catch(e) { milestones.value = [] }
     roles.value = rolesRes.data; allMembers.value = membersRes.data
-    try { const pmRes = await getProjectMembers(pid.value); projectMembers.value = pmRes.data||[] } catch(e){}
     try { openRisks.value = ((await getRisks(pid.value,{type:'risk'})).data||[]).filter(r=>r.status==='open') } catch(e){}
     try { reports.value = (await getReports(pid.value)).data||[] } catch(e){}
     try { riskItems.value = (await getRisks(pid.value)).data||[] } catch(e){}
@@ -467,11 +448,9 @@ function editMilestone(row) { editingMilestone.value=row; Object.assign(mileston
 async function saveMilestone() { try { const payload = {}; for(const[k,v] of Object.entries(milestoneForm)){ payload[k] = v === undefined ? null : v } if(editingMilestone.value){ await updateMilestone(editingMilestone.value.id,payload) }else{ await createMilestone(pid.value,payload) }; milestoneDialogVisible.value=false; editingMilestone.value=null; milestones.value=(await getMilestones(pid.value)).data; ElMessage.success('已保存') } catch(e){ const d=e?.response?.data?.detail; ElMessage.error('保存失败: '+(Array.isArray(d)?d.map(x=>x.msg).join(';'):(typeof d==='string'?d:'请重试'))) } }
 async function removeMilestone(id) { await deleteMilestone(id); milestones.value=(await getMilestones(pid.value)).data }
 async function onGanttChanged() { try { milestones.value = (await getMilestones(pid.value)).data||[] } catch(e){} }
-async function addMember() { if(!addMemberForm.value.member_id||!addMemberForm.value.role_id){ElMessage.warning('请选择');return}; try{const d={...addMemberForm.value}; if(d.phase_ids&&d.phase_ids.length) d.phase_ids=JSON.stringify(d.phase_ids); else d.phase_ids='[]'; await addProjectMember(pid.value,d); ElMessage.success('已添加');showAddMemberDialog.value=false;addMemberForm.value={member_id:null,role_id:null,allocation_pct:100,is_key:false,phase_ids:[]};projectMembers.value=(await getProjectMembers(pid.value)).data}catch(e){const detail=e?.response?.data?.detail; ElMessage.error('添加失败: ' + (typeof detail==='string'?detail:(Array.isArray(detail)?detail.map(x=>x.msg).join(';'):(e.message||'未知错误'))))} }
-async function removeMember(row) { await removeProjectMember(row.id); projectMembers.value=(await getProjectMembers(pid.value)).data }
-async function onRoleChange(row) { try{await updateProjectMember(row.id,{role_id:row.role_id})}catch(e){} }
-async function onAllocationChange(row) { try{await updateProjectMember(row.id,{allocation_pct:row.allocation_pct})}catch(e){} }
-async function onMemberKeyChange(row) { try{await updateProjectMember(row.id,{is_key:row.is_key})}catch(e){} }
+// 概览页「当前状态」的人员数取的是项目接口的 member_count，只在挂载时拉一次；
+// 「项目团队」卡片增删成员后回传最新人数，这里同步刷新，免得两处对不上
+function syncMemberCount(count) { if (project.value) project.value.member_count = count }
 async function onReportSubmit(data) { try { let res; if(editingReport.value){ res=await updateReport(editingReport.value.id,data) }else{ res=await createReport(pid.value,data) }; reportView.value='history'; editingReport.value=null; reports.value=(await getReports(pid.value)).data; const n=res.data?._risks_created; if(n>0){ ElMessage.success(`周报已提交，自动提取了 ${n} 条风险项`) }else{ ElMessage.success('周报已提交') } } catch(e) { const d=e?.response?.data?.detail; ElMessage.error('提交失败: '+(Array.isArray(d)?d.map(x=>x.msg).join(';'):(d||e.message||''))) } }
 const uploadHeaders = computed(() => ({ Authorization: `Bearer ${localStorage.getItem('access_token')}` }))
 // AI import

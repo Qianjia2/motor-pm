@@ -6,11 +6,11 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy import select, update
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 from backend_v2.database import get_db
 from backend_v2.auth import get_current_user
 from backend_v2.config import settings
-from backend_v2.models import Client, ClientCommunication
+from backend_v2.models import Client, ClientCommunication, Project, ProjectMember
 
 router = APIRouter(prefix="/api", tags=["client-communications"])
 
@@ -22,6 +22,10 @@ IMG_EXTS = ("png", "jpg", "jpeg", "gif", "bmp", "webp")
 def comm_to_dict(c: ClientCommunication):
     return {
         "id": c.id, "client_id": c.client_id,
+        "project_id": c.project_id,
+        # 项目被软删/外键悬空时渲染成空白,不抛错
+        "project_name": c.project.name if c.project else "",
+        "project_code": c.project.code if c.project else "",
         "comm_date": c.comm_date.isoformat() if c.comm_date else None,
         "comm_type": c.comm_type or "其他",
         "subject": c.subject or "",
@@ -47,11 +51,62 @@ def _get_client_or_404(db: Session, client_id: int) -> Client:
     return c
 
 
+def _resolve_project_link(db: Session, project_id, client_id: int):
+    """校验沟通记录的关联项目: 存在 + 未软删 + 属于同一客户。返回 Project 或 None(表示不关联)。"""
+    if project_id in (None, "", 0, "0"):
+        return None
+    try:
+        pid = int(project_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="关联项目无效")
+    proj = db.execute(
+        select(Project).where(Project.id == pid, Project.is_active == True)
+    ).scalar_one_or_none()
+    if not proj:
+        raise HTTPException(status_code=400, detail="关联项目不存在或已删除")
+    if proj.client_id != client_id:
+        raise HTTPException(status_code=400, detail="关联项目必须属于该客户")
+    return proj
+
+
 @router.get("/clients/{client_id}/communications")
-def list_communications(client_id: int, db: Session = Depends(get_db), _current_user=Depends(get_current_user)):
+def list_communications(client_id: int, project_id: int = Query(None),
+                        db: Session = Depends(get_db), _current_user=Depends(get_current_user)):
     _get_client_or_404(db, client_id)
+    q = (select(ClientCommunication)
+         .options(selectinload(ClientCommunication.project))
+         .where(ClientCommunication.client_id == client_id))
+    if project_id:
+        q = q.where(ClientCommunication.project_id == project_id)
     rows = db.execute(
-        select(ClientCommunication).where(ClientCommunication.client_id == client_id)
+        q.order_by(ClientCommunication.comm_date.desc(), ClientCommunication.id.desc())
+    ).scalars().all()
+    return [comm_to_dict(c) for c in rows]
+
+
+@router.get("/projects/{project_id}/communications")
+def list_project_communications(project_id: int, db: Session = Depends(get_db),
+                                current_user=Depends(get_current_user)):
+    """项目侧沟通记录: 只返回挂到本项目的记录。
+
+    写操作仍在客户维度(POST /clients/{cid}/communications),本接口只读。
+    """
+    p = db.execute(
+        select(Project).where(Project.id == project_id, Project.is_active == True)
+    ).scalar_one_or_none()
+    if not p:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    # 项目可见性: 与非管理员访问项目详情保持一致(projects.py 同款校验)
+    if current_user.role != "admin" and current_user.member_id:
+        is_member = db.execute(select(ProjectMember).where(
+            ProjectMember.project_id == project_id,
+            ProjectMember.member_id == current_user.member_id)).scalar_one_or_none()
+        if not is_member:
+            raise HTTPException(status_code=403, detail="无权访问此项目")
+    rows = db.execute(
+        select(ClientCommunication)
+        .options(selectinload(ClientCommunication.project))
+        .where(ClientCommunication.project_id == project_id)
         .order_by(ClientCommunication.comm_date.desc(), ClientCommunication.id.desc())
     ).scalars().all()
     return [comm_to_dict(c) for c in rows]
@@ -69,8 +124,10 @@ def create_communication(client_id: int, data: dict, db: Session = Depends(get_d
             comm_date = date.fromisoformat(str(comm_date)[:10])
         except ValueError:
             raise HTTPException(status_code=400, detail="沟通日期格式无效")
+    proj = _resolve_project_link(db, data.get("project_id"), client_id)
     c = ClientCommunication(
         client_id=client_id,
+        project_id=proj.id if proj else None,
         comm_date=comm_date,
         comm_type=comm_type,
         subject=(data.get("subject") or "").strip(),
@@ -83,7 +140,7 @@ def create_communication(client_id: int, data: dict, db: Session = Depends(get_d
     )
     db.add(c)
     db.commit()
-    db.refresh(c)
+    c.project = proj          # 填充关联对象,comm_to_dict 不再多发一次 SELECT
     return comm_to_dict(c)
 
 
@@ -92,7 +149,7 @@ def update_communication(comm_id: int, data: dict, db: Session = Depends(get_db)
     c = db.execute(select(ClientCommunication).where(ClientCommunication.id == comm_id)).scalar_one_or_none()
     if not c:
         raise HTTPException(status_code=404, detail="沟通记录不存在")
-    allowed = ["comm_date", "comm_type", "subject", "content", "owner", "contact_person", "images"]
+    allowed = ["comm_date", "comm_type", "subject", "content", "owner", "contact_person", "images", "project_id"]
     for k in allowed:
         if k not in data:
             continue
@@ -111,6 +168,11 @@ def update_communication(comm_id: int, data: dict, db: Session = Depends(get_db)
                 setattr(c, k, None)
         elif k == "images":
             setattr(c, k, _dump_images(data))
+        elif k == "project_id":
+            # 显式走校验: 直接 setattr 会把 ''/字符串写进 INTEGER 列
+            proj = _resolve_project_link(db, data[k], c.client_id)
+            setattr(c, k, proj.id if proj else None)
+            c.project = proj   # 同步关联对象,避免旧的 project 残留
         else:
             setattr(c, k, data[k])
     c.updated_at = datetime.utcnow()

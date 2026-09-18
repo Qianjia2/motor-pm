@@ -335,10 +335,17 @@
             <el-tab-pane label="沟通记录" name="comms">
               <div class="p360-section">
                 <div class="p360-title">
-                  沟通记录（{{ (profile.communications || []).length }}）
+                  沟通记录（{{ filteredComms.length }}<template v-if="commProjectFilter !== null"> / {{ (profile.communications || []).length }}</template>）
                   <el-button link size="small" type="primary" @click="openCommDialog(null)">+ 新增</el-button>
                 </div>
-                <div v-for="c in profile.communications" :key="c.id" class="comm-item" @click="openCommDialog(c)">
+                <div v-if="(profile.communications || []).length" class="comm-filter">
+                  <el-select v-model="commProjectFilter" size="small" style="width:230px" placeholder="按项目筛选">
+                    <el-option label="全部记录" :value="null" />
+                    <el-option label="未关联项目" :value="0" />
+                    <el-option v-for="p in profileProjects" :key="p.id" :label="`${p.name}（${p.code}）`" :value="p.id" />
+                  </el-select>
+                </div>
+                <div v-for="c in filteredComms" :key="c.id" class="comm-item" @click="openCommDialog(c)">
                   <div class="comm-head">
                     <el-tag size="small" effect="plain">{{ c.comm_type }}</el-tag>
                     <span class="comm-subject">{{ c.subject }}</span>
@@ -354,9 +361,14 @@
                   <div class="comm-foot">
                     <span v-if="c.contact_person">对方：{{ c.contact_person }}</span>
                     <span v-if="c.owner">我方：{{ c.owner }}</span>
+                    <span v-if="c.project_id" class="comm-proj" title="打开关联项目" @click.stop="goProject(c.project_id)">
+                      📎 {{ c.project_name || c.project_code || ('项目 #' + c.project_id) }}
+                    </span>
                   </div>
                 </div>
-                <div v-if="!(profile.communications || []).length" class="p360-empty">暂无沟通记录，点击右上角新增</div>
+                <div v-if="!filteredComms.length" class="p360-empty">
+                  {{ (profile.communications || []).length ? '该筛选下暂无沟通记录' : '暂无沟通记录，点击右上角新增' }}
+                </div>
               </div>
             </el-tab-pane>
           </el-tabs>
@@ -365,50 +377,14 @@
     </el-drawer>
 
     <!-- 沟通记录编辑 -->
-    <el-dialog :title="commEditing ? '编辑沟通记录' : '新增沟通记录'" v-model="commVisible" width="520px">
-      <el-form :model="commForm" label-width="90px" size="small">
-        <el-row :gutter="12">
-          <el-col :span="12">
-            <el-form-item label="沟通日期"><el-date-picker v-model="commForm.comm_date" type="date" value-format="YYYY-MM-DD" style="width:100%" /></el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="沟通方式">
-              <el-select v-model="commForm.comm_type" style="width:100%">
-                <el-option v-for="t in commTypes" :key="t" :label="t" :value="t" />
-              </el-select>
-            </el-form-item>
-          </el-col>
-        </el-row>
-        <el-form-item label="主题" required><el-input v-model="commForm.subject" placeholder="如：样机测试进度确认" /></el-form-item>
-        <el-form-item label="沟通内容"><el-input v-model="commForm.content" type="textarea" :rows="3" /></el-form-item>
-        <el-form-item label="微信图片">
-          <div style="width:100%">
-            <el-button size="small" type="primary" plain :loading="aiCommIng" @click="$refs.commImgInput.click()">📷 上传微信图片（AI识别汇总）</el-button>
-            <input ref="commImgInput" type="file" accept="image/*" multiple style="display:none" @change="onCommImages" />
-            <div v-if="aiCommMsg" style="font-size:12px;color:#67c23a;margin-top:4px">{{ aiCommMsg }}</div>
-            <div v-if="(commForm.images || []).length" class="comm-imgs">
-              <div v-for="(img, i) in commForm.images" :key="img" class="comm-img">
-                <a :href="'/uploads/' + img" target="_blank"><img :src="'/uploads/' + img" alt="图片" /></a>
-                <span class="comm-img-del" title="移除" @click="removeCommImg(i)">✕</span>
-              </div>
-            </div>
-          </div>
-        </el-form-item>
-        <el-row :gutter="12">
-          <el-col :span="12">
-            <el-form-item label="对方联系人"><el-input v-model="commForm.contact_person" /></el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="我方沟通人"><el-input v-model="commForm.owner" /></el-form-item>
-          </el-col>
-        </el-row>
-      </el-form>
-      <template #footer>
-        <el-button v-if="commEditing" type="danger" plain size="small" style="float:left" @click="delComm">删除</el-button>
-        <el-button @click="commVisible=false">取消</el-button>
-        <el-button type="primary" @click="saveComm" :loading="savingComm">保存</el-button>
-      </template>
-    </el-dialog>
+    <CommDialog
+      v-model="commVisible"
+      :client-id="profile?.client?.id ?? null"
+      :projects="profileProjects"
+      :comm="commEditing"
+      @saved="loadProfile(profile?.client?.id)"
+      @deleted="loadProfile(profile?.client?.id)"
+    />
 
     <!-- 联系人编辑 -->
     <el-dialog :title="contactEditing ? '编辑联系人' : '新增联系人'" v-model="contactVisible" width="480px">
@@ -444,9 +420,12 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api/index.js'
+import CommDialog from '../components/client/CommDialog.vue'
 
+const router = useRouter()
 const activeTab = ref('list')
 const clients = ref([])
 const loading = ref(false)
@@ -526,7 +505,10 @@ const projectsLoaded = ref(false)
 async function loadProjects() {
   try {
     const res = await api.get('/projects', { params: { page_size: 100, sort_by: 'code' } })
-    allProjects.value = Array.isArray(res.data) ? res.data : (res.data?.items || [])
+    // 现网返回 { data: [...], total, page, page_size },不是 { items: [...] } —— 这里原先只认 items,
+    // 导致 allProjects 恒为空、商机/沟通记录的项目下拉永远是空的
+    const d = res.data
+    allProjects.value = Array.isArray(d) ? d : (d?.data || d?.items || [])
     projectsLoaded.value = true
   } catch { allProjects.value = [] }
 }
@@ -541,7 +523,8 @@ function onOppClientChange() {
   }
 }
 function goProject(id) {
-  if (id) window.location.href = `#/projects/${id}`
+  // 应用是 history 模式(router.js createWebHistory),写 '#/projects/x' 只会改 hash、不换路由
+  if (id) router.push(`/projects/${id}`)
 }
 async function openOppDialog(opp, client) {
   if (!projectsLoaded.value) await loadProjects()
@@ -617,6 +600,9 @@ async function openProfile(client) {
   profileVisible.value = true
   profile.value = null
   p360Tab.value = 'overview'
+  commProjectFilter.value = null      // 换客户时重置筛选,防止残留
+  commEditing.value = null
+  if (!projectsLoaded.value) loadProjects()   // 沟通记录的项目筛选/下拉都依赖 allProjects
   await loadProfile(client.id)
 }
 
@@ -649,89 +635,26 @@ const graph = computed(() => {
 })
 
 // ── 沟通记录 ──
-const commTypes = ['电话', '邮件', '拜访', '微信', '会议', '其他']
+// 表单与上传/AI汇总逻辑在 components/client/CommDialog.vue,这里只保留可见性、可选项目与筛选
 const commVisible = ref(false)
 const commEditing = ref(null)
-const savingComm = ref(false)
-const aiCommIng = ref(false)
-const aiCommMsg = ref('')
-const commForm = ref({})
-function openCommDialog(comm) {
-  aiCommMsg.value = ''
-  if (comm) {
-    commEditing.value = comm
-    commForm.value = { ...comm, images: [...(comm.images || [])] }
-  } else {
-    commEditing.value = null
-    commForm.value = {
-      comm_date: new Date().toISOString().slice(0, 10),
-      comm_type: '电话', subject: '', content: '', owner: '', contact_person: '', images: [],
-    }
-  }
+const commProjectFilter = ref(null)   // null=全部, 0=未关联项目, 其余=project_id
+// 当前客户名下的项目(供「关联项目」下拉)。不能复用 clientProjects——那个绑定的是 oppForm.client_id
+const profileProjects = computed(() => {
+  const cid = profile.value?.client?.id
+  return cid ? allProjects.value.filter(p => p.client?.id === cid) : []
+})
+const filteredComms = computed(() => {
+  const list = profile.value?.communications || []
+  if (commProjectFilter.value === null) return list
+  return commProjectFilter.value === 0
+    ? list.filter(c => !c.project_id)
+    : list.filter(c => c.project_id === commProjectFilter.value)
+})
+async function openCommDialog(comm) {
+  if (!projectsLoaded.value) await loadProjects()
+  commEditing.value = comm || null
   commVisible.value = true
-}
-async function onCommImages(e) {
-  const files = [...(e.target.files || [])]
-  e.target.value = ''
-  if (!files.length) return
-  const cid = profile.value?.client?.id
-  if (!cid) return
-  aiCommIng.value = true
-  aiCommMsg.value = ''
-  try {
-    const fd = new FormData()
-    files.forEach(f => fd.append('files', f))
-    const r = await api.post(`/clients/${cid}/communications/upload-images`, fd, { timeout: 300000 })
-    const d = r.data
-    const existing = new Set(commForm.value.images || [])
-    const added = (d.images || []).filter(p => !existing.has(p))
-    commForm.value.images = [...(commForm.value.images || []), ...added]
-    if (d.ok && d.summary) {
-      commForm.value.content = commForm.value.content
-        ? commForm.value.content + '\n\n--- 微信图片AI汇总 ---\n' + d.summary
-        : d.summary
-      if (commForm.value.comm_type === '电话') commForm.value.comm_type = '微信'
-      aiCommMsg.value = d.message + '，已生成汇总，可编辑后保存'
-    } else {
-      aiCommMsg.value = d.message || '识别完成'
-    }
-  } catch (err) {
-    ElMessage.error('识别失败: ' + (err?.response?.data?.detail || err?.message || ''))
-  }
-  aiCommIng.value = false
-}
-function removeCommImg(i) {
-  const img = commForm.value.images[i]
-  commForm.value.images.splice(i, 1)
-  api.delete(`/communications/remove-image?path=${encodeURIComponent(img)}`).catch(() => {})
-}
-async function saveComm() {
-  const cid = profile.value?.client?.id
-  if (!cid) return
-  if (!commForm.value.subject) { ElMessage.warning('请输入沟通主题'); return }
-  savingComm.value = true
-  try {
-    if (commEditing.value) {
-      await api.put(`/communications/${commEditing.value.id}`, commForm.value)
-    } else {
-      await api.post(`/clients/${cid}/communications`, commForm.value)
-    }
-    ElMessage.success('已保存')
-    commVisible.value = false
-    loadProfile(cid)
-  } catch (e) {
-    ElMessage.error('保存失败: ' + (e?.response?.data?.detail || e?.message || ''))
-  }
-  savingComm.value = false
-}
-async function delComm() {
-  try {
-    await ElMessageBox.confirm('删除这条沟通记录？', '确认', { type: 'warning' })
-    await api.delete(`/communications/${commEditing.value.id}`)
-    ElMessage.success('已删除')
-    commVisible.value = false
-    loadProfile(profile.value?.client?.id)
-  } catch {}
 }
 
 // ── 联系人 ──
@@ -877,11 +800,10 @@ onMounted(() => loadClients())
 .comm-thumbs { display: flex; gap: 5px; margin-top: 6px; }
 .comm-thumb { width: 44px; height: 44px; object-fit: cover; border-radius: 4px; border: 1px solid #f0f2f5; }
 .comm-more { font-size: 12px; color: #909399; align-self: center; }
-.comm-foot { display: flex; gap: 14px; font-size: 11px; color: #909399; margin-top: 4px; }
-.comm-imgs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
-.comm-img { position: relative; width: 64px; height: 64px; border-radius: 6px; overflow: hidden; }
-.comm-img img { width: 100%; height: 100%; object-fit: cover; }
-.comm-img-del { position: absolute; top: 0; right: 0; width: 16px; height: 16px; font-size: 10px; line-height: 16px; text-align: center; color: #fff; background: rgba(0,0,0,.55); cursor: pointer; border-radius: 0 0 0 6px; }
+.comm-foot { display: flex; justify-content: flex-start; gap: 14px; font-size: 11px; color: #909399; margin-top: 4px; }
+.comm-filter { margin-bottom: 6px; }
+.comm-proj { color: #409eff; cursor: pointer; margin-left: auto; }
+.comm-proj:hover { text-decoration: underline; }
 
 /* 联系人 */
 .contact-item { display: flex; align-items: center; border-bottom: 1px solid #f0f2f5; padding: 9px 0; }

@@ -66,10 +66,9 @@ def create_member(
     role = member.pop("accRole", "member") if "accRole" in member else "member"
     # 新 UI：按权限角色 ID 分配（role_id 权威，role 同步为兼容视图）
     acc_role_id = member.pop("accRoleId", None) if "accRoleId" in member else None
-    # 模块权限随账号保存（旧 UI 的个人覆盖，新 UI 不再使用）
-    import json as _json
+    # 模块权限随账号保存。具体落什么值要等 m 入库拿到部门之后才算——见下面 flush 之后
+    # 的 resolve_new_user_matrix：显式带了算人工配置，否则套该人员所属部门的模板。
     perms_raw = member.pop("permissions", None) if "permissions" in member else None
-    permissions = _json.dumps(perms_raw, ensure_ascii=False) if perms_raw else "{}"
 
     from backend_v2.models import Department, PermissionRole, UserAuth
     from backend_v2.auth import hash_password
@@ -95,6 +94,11 @@ def create_member(
     db.flush()
     db.refresh(m)
 
+    # 必须放在 flush 之后：这时 m.id 和 m.department 才可用，
+    # 部门模板才查得到（_sync_department 已把部门文本同步进部门字典）。
+    from backend_v2.permissions import resolve_new_user_matrix
+    permissions, perm_source = resolve_new_user_matrix(db, m.id, perms_raw)
+
     # Auto-create user account if username provided
     account_created = False
     if username and password:
@@ -106,6 +110,7 @@ def create_member(
                 existing.role = role
                 existing.role_id = role_id
                 existing.permissions = permissions
+                existing.perm_source = perm_source
                 existing.member_id = m.id
                 existing.is_active = True
                 db.commit()
@@ -116,6 +121,7 @@ def create_member(
                 existing.role = role
                 existing.role_id = role_id
                 existing.permissions = permissions
+                existing.perm_source = perm_source
                 existing.member_id = m.id
                 existing.is_active = True
                 db.commit()
@@ -126,13 +132,15 @@ def create_member(
                 existing.role = role
                 existing.role_id = role_id
                 existing.permissions = permissions
+                existing.perm_source = perm_source
                 existing.is_active = True
                 db.commit()
                 account_created = True
             # else: username taken by another person
         else:
             u = UserAuth(username=username, password_hash=hash_password(password), role=role,
-                         role_id=role_id, permissions=permissions, member_id=m.id)
+                         role_id=role_id, permissions=permissions, perm_source=perm_source,
+                         member_id=m.id)
             db.add(u)
             db.commit()
             account_created = True
@@ -190,16 +198,22 @@ def add_project_member(
     project_id: int, data: ProjectMemberCreate,
     db: Session = Depends(get_db), current_user=Depends(get_current_user),
 ):
-    # Access control: only admin or project team members can add members
+    # Access control: admin / 有「项目台账-编辑」权限者 / 项目现有成员。
+    # 放宽是为了让建项目的人（新建项目时一次配齐项目组）能立即加成员；
+    # 账号未绑定人员档案(member_id 为空)时维持原行为，不做拦截。
     if current_user.role != "admin" and current_user.member_id:
-        is_project_member = db.execute(
-            select(ProjectMember).where(
-                ProjectMember.project_id == project_id,
-                ProjectMember.member_id == current_user.member_id,
-            )
-        ).scalar_one_or_none()
-        if not is_project_member:
-            raise HTTPException(status_code=403, detail="只有项目成员或管理员才能添加人员")
+        from backend_v2.permissions import check_permission
+        allowed = check_permission(current_user, "projects", "edit")
+        if not allowed:
+            is_project_member = db.execute(
+                select(ProjectMember).where(
+                    ProjectMember.project_id == project_id,
+                    ProjectMember.member_id == current_user.member_id,
+                )
+            ).scalar_one_or_none()
+            allowed = is_project_member is not None
+        if not allowed:
+            raise HTTPException(status_code=403, detail="只有管理员、有项目台账编辑权限者或项目成员才能添加人员")
 
     # Check duplicate
     existing = (db.execute(

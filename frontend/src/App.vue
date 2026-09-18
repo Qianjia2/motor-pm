@@ -62,6 +62,10 @@ const authStore = useAuthStore()
 onMounted(() => {
   if (localStorage.getItem('access_token')) {
     authStore.ensureNameMap()  // 刷新页面后仍显示中文名
+    // 权限只在登录那一刻拉过一次,存在 localStorage 里。管理员给别人改完权限后,
+    // 对方不重新登录就一直是旧菜单——启动时补拉一次,省掉「我权限怎么没变」。
+    // 后端本来就是每请求现算的,所以这里拉到的就是最新的。
+    authStore.fetchMyPermissions?.()
   }
 
   if (route.query.bind_ok) {

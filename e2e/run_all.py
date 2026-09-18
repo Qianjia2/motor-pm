@@ -1,4 +1,4 @@
-"""E2E 一键运行入口: 顺序执行 4 个套件, 落盘完整日志, 输出汇总
+"""E2E 一键运行入口: 顺序执行 5 个套件, 落盘完整日志, 输出汇总
 
 用法:
     python e2e/run_all.py            # 默认 http://localhost:5002
@@ -18,6 +18,7 @@ SUITES = [
     ("suite_02_21_items.py", "21项识别生成"),
     ("suite_03_multitpl.py", "多模板落位/回退"),
     ("suite_04_batch_bar.py", "批量操作条"),
+    ("suite_05_training_process.py", "培训学习·项目管理流程"),
 ]
 
 def preflight():

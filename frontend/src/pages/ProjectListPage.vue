@@ -146,7 +146,7 @@
                   </div>
                   <div class="proj-card-bottom">
                     <div class="proj-owner">
-                      <span v-if="proj.pm" class="pm-name link" title="团队成员" @click.stop="$router.push({ path: `/projects/${proj.id}`, query: { tab: 'team' } })">👤 {{ proj.pm }}</span>
+                      <span v-if="proj.pm" class="pm-name link" title="项目团队（概览）" @click.stop="$router.push({ path: `/projects/${proj.id}`, query: { tab: 'overview' } })">👤 {{ proj.pm }}</span>
                       <span v-if="proj.client?.name" class="client-name link" title="客户管理" @click.stop="$router.push('/clients')">{{ proj.client?.name }}</span>
                     </div>
                     <div class="proj-actions" @click.stop>
@@ -214,8 +214,8 @@ const expanded = ref(new Set())
 
 const PHASE_ORDER = ['概念需求阶段', '方案设计阶段', '样机试制阶段', '验证阶段', '设计定型阶段', '售后维护阶段']
 const PHASE_CODE = { '概念需求阶段': 'P0', '方案设计阶段': 'PP1', '样机试制阶段': 'PP2', '验证阶段': 'PP3', '设计定型阶段': 'PP4', '售后维护阶段': 'PP5' }
-const SW_PHASE_ORDER = ['需求分析阶段', '架构设计阶段', '开发编码阶段', '测试验证阶段', '发布交付阶段']
-const SW_PHASE_CODE = { '需求分析阶段': 'S0', '架构设计阶段': 'S1', '开发编码阶段': 'S2', '测试验证阶段': 'S3', '发布交付阶段': 'S4' }
+const SW_PHASE_ORDER = ['需求分析阶段', '软件开发阶段', '测试验证阶段', '发布交付阶段']
+const SW_PHASE_CODE = { '需求分析阶段': 'S0', '软件开发阶段': 'S1', '测试验证阶段': 'S2', '发布交付阶段': 'S3' }
 // 全部视图:硬件阶段在前,软件阶段在后,均带 code
 const PHASE_ORDER_ALL = [...PHASE_ORDER, ...SW_PHASE_ORDER]
 const PHASE_CODE_ALL = { ...PHASE_CODE, ...SW_PHASE_CODE }

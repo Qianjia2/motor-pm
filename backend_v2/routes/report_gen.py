@@ -915,7 +915,8 @@ async def generate_deliverable_report(
     # 匹配标准(同阶段 + 名称双向包含),取模板
     from backend_v2.models import GateDeliverableStandard as StdModel
     stds = (db.execute(
-        select(StdModel).where(StdModel.phase_id == dv.phase_id)
+        select(StdModel).where(
+            StdModel.phase_id == dv.phase_id, StdModel.is_active == True)
     )).scalars().all()
     matched = next(
         (s for s in stds if s.name and dv.name and (s.name in dv.name or dv.name in s.name)),
@@ -1387,7 +1388,8 @@ async def fill_deliverable_template(
         raise HTTPException(status_code=404, detail="交付物不存在")
 
     from backend_v2.models import GateDeliverableStandard as StdModel
-    stds = (db.execute(select(StdModel).where(StdModel.phase_id == dv.phase_id))).scalars().all()
+    stds = (db.execute(select(StdModel).where(
+        StdModel.phase_id == dv.phase_id, StdModel.is_active == True))).scalars().all()
     std = next((s for s in stds if s.name and dv.name and (s.name in dv.name or dv.name in s.name)), None)
     if not std:
         raise HTTPException(status_code=400, detail="该交付物未匹配到标准，无法获取模板。请先在「标准维护」中创建同名标准并上传模板")

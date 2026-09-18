@@ -122,14 +122,74 @@
           </el-col>
         </el-row>
 
-        <el-form-item>
-          <el-button type="primary" @click="submitForm" :loading="submitting">
-            {{ isEdit ? '保存修改' : '创建项目' }}
+      </el-form>
+
+      <el-divider content-position="left">项目组</el-divider>
+      <div style="max-width:800px">
+        <el-alert v-if="isEdit" type="info" :closable="false" show-icon
+          title="修改项目组请到「项目详情 → 团队」维护" />
+        <template v-else>
+          <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">
+            建议至少指定一名<strong>项目经理</strong>，并按电磁/结构/硬件/软件/算法/测试分配核心角色；留空则创建后再到「项目详情 → 团队」添加。
+          </div>
+          <el-table :data="pendingMembers" stripe size="small" empty-text="尚未添加成员">
+            <el-table-column prop="member_name" label="姓名" width="110" />
+            <el-table-column prop="role_name" label="项目角色" width="130" />
+            <el-table-column label="投入比例" width="90">
+              <template #default="{ row }">{{ row.allocation_pct }}%</template>
+            </el-table-column>
+            <el-table-column label="关键" width="70">
+              <template #default="{ row }">
+                <el-tag v-if="row.is_key" type="danger" size="small">关键</el-tag>
+                <span v-else>—</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="80">
+              <template #default="{ $index }">
+                <el-button type="danger" link size="small" @click="pendingMembers.splice($index, 1)">移除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+          <el-button size="small" style="margin-top:10px" @click="openAddMember">
+            <el-icon><Plus /></el-icon> 添加成员
           </el-button>
-          <el-button @click="$router.back()">取消</el-button>
+        </template>
+      </div>
+
+      <div style="max-width:800px;margin-top:24px">
+        <el-button type="primary" @click="submitForm" :loading="submitting">
+          {{ isEdit ? '保存修改' : '创建项目' }}
+        </el-button>
+        <el-button @click="$router.back()">取消</el-button>
+      </div>
+    </el-card>
+
+    <!-- 添加项目组成员弹窗 -->
+    <el-dialog v-model="showAddMember" title="添加项目组成员" width="520px">
+      <el-form :model="addMemberForm" label-width="100px">
+        <el-form-item label="成员">
+          <el-select v-model="addMemberForm.member_id" placeholder="选择成员" filterable style="width:100%">
+            <el-option v-for="m in availableMembers" :key="m.id" :label="`${m.name}（${m.department || '—'}）`" :value="m.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="项目角色">
+          <el-select v-model="addMemberForm.role_id" placeholder="选择角色" style="width:100%">
+            <el-option v-for="r in roles" :key="r.id" :label="r.name" :value="r.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="投入比例(%)">
+          <el-input-number v-model="addMemberForm.allocation_pct" :min="0" :max="100" />
+          <div style="font-size:11px;color:var(--text-muted);margin-top:4px">成员在本项目投入的工作量占比，100%=全职投入本项目</div>
+        </el-form-item>
+        <el-form-item label="关键人员">
+          <el-switch v-model="addMemberForm.is_key" />
         </el-form-item>
       </el-form>
-    </el-card>
+      <template #footer>
+        <el-button @click="showAddMember = false">取消</el-button>
+        <el-button type="primary" @click="confirmAddMember">添加</el-button>
+      </template>
+    </el-dialog>
 
     <!-- 新增客户弹窗 -->
     <el-dialog v-model="showAddClient" title="新增客户" width="450px">
@@ -158,7 +218,8 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { createProject, updateProject, getProject, getPhases, getClients, createClient, updateClient } from '../api/index.js'
+import { createProject, updateProject, getProject, getPhases, getClients, createClient, updateClient,
+         getTeamMembers, getRoles, addProjectMember } from '../api/index.js'
 import { currentProjectType } from '../stores/projectType.js'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
@@ -170,6 +231,36 @@ const phases = ref([])
 const clients = ref([])
 const showAddClient = ref(false)
 const newClientForm = ref({ name: '', abbreviation: '', contact_person: '', contact_phone: '' })
+
+// 项目组：新建时先在本地暂存，创建成功后按项目 ID 逐个落库
+const teamMembers = ref([])
+const roles = ref([])
+const pendingMembers = ref([])
+const showAddMember = ref(false)
+const addMemberForm = ref({ member_id: null, role_id: null, allocation_pct: 100, is_key: false })
+
+const availableMembers = computed(() => {
+  const used = new Set(pendingMembers.value.map(m => m.member_id))
+  return teamMembers.value.filter(m => !used.has(m.id))
+})
+
+function openAddMember() {
+  addMemberForm.value = { member_id: null, role_id: null, allocation_pct: 100, is_key: false }
+  showAddMember.value = true
+}
+
+function confirmAddMember() {
+  const f = addMemberForm.value
+  if (!f.member_id || !f.role_id) { ElMessage.warning('请选择成员和角色'); return }
+  const m = teamMembers.value.find(x => x.id === f.member_id)
+  const r = roles.value.find(x => x.id === f.role_id)
+  pendingMembers.value.push({
+    member_id: f.member_id, role_id: f.role_id,
+    allocation_pct: f.allocation_pct, is_key: f.is_key,
+    member_name: m?.name || '', role_name: r?.name || '',
+  })
+  showAddMember.value = false
+}
 
 const isEdit = computed(() => !!route.params.id)
 
@@ -234,8 +325,10 @@ async function loadForm() {
 }
 
 onMounted(async () => {
-  const clientsRes = await getClients()
+  const [clientsRes, membersRes, rolesRes] = await Promise.all([getClients(), getTeamMembers(), getRoles()])
   clients.value = clientsRes.data
+  teamMembers.value = membersRes.data
+  roles.value = rolesRes.data
   await loadForm()
   await loadPhasesByType()
 })
@@ -301,11 +394,38 @@ async function submitForm() {
     if (isEdit.value) {
       await updateProject(route.params.id, payload)
       ElMessage.success('项目已更新')
-    } else {
-      await createProject(payload)
-      ElMessage.success('项目已创建')
+      router.push('/projects')
+      return
     }
-    router.push('/projects')
+
+    const res = await createProject(payload)
+    const newId = res.data?.id
+
+    // 项目已建,接着把项目组一次配齐。逐条添加:单个人失败不影响其余,
+    // 最后统一汇总提示,避免一个人重名就把整批回滚掉。
+    const failed = []
+    for (const m of pendingMembers.value) {
+      try {
+        await addProjectMember(newId, {
+          member_id: m.member_id, role_id: m.role_id,
+          allocation_pct: m.allocation_pct, is_key: m.is_key, phase_ids: '[]',
+        })
+      } catch (e) {
+        const d = e?.response?.data?.detail
+        failed.push(`${m.member_name}（${typeof d === 'string' ? d : '添加失败'}）`)
+      }
+    }
+
+    if (failed.length) {
+      ElMessage.warning(`项目已创建，但有 ${failed.length} 位成员未加入：${failed.join('；')}。可到「项目详情 → 概览 → 项目团队」重试`)
+      router.push('/projects')
+    } else if (pendingMembers.value.length) {
+      ElMessage.success(`项目已创建，项目组 ${pendingMembers.value.length} 人已配齐`)
+      router.push(`/projects/${newId}?tab=overview`)
+    } else {
+      ElMessage.success('项目已创建')
+      router.push('/projects')
+    }
   } catch (e) {
     ElMessage.error('操作失败: ' + (e.response?.data?.message || e.message))
   } finally {

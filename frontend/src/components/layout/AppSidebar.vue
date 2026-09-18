@@ -43,7 +43,8 @@ import { useAuthStore } from '../../stores/auth.js'
 import { currentProjectType } from '../../stores/projectType.js'
 import {
   HomeFilled, DataAnalysis, List, Plus, Timer, User, Setting,
-  DocumentChecked, ChatDotRound, Document, FolderOpened, Stamp, Reading, Monitor
+  DocumentChecked, ChatDotRound, Document, FolderOpened, Stamp, Reading, Monitor,
+  Connection
 } from '@element-plus/icons-vue'
 
 const route = useRoute()
@@ -54,6 +55,9 @@ const alertCount = computed(() => auth.alerts || 0)
 
 const mainNav = [
   { path: '/my-work', label: '我的工作台', icon: HomeFilled, match: '/my-work', module: 'my_work' },
+  // 复用「项目管理」的权限:工作流本来就是项目的东西,单独开一个权限键
+  // 会让它默认对所有人不可见(缺失模块会被补成全 false),还得迁移一遍权限矩阵
+  { path: '/project-workflow', label: '项目工作流', icon: Connection, match: '/project-workflow', module: 'projects' },
   { path: '/', label: '项目驾驶舱', icon: DataAnalysis, match: '/', module: 'dashboard' },
   { path: '/management-weekly', label: '管理层周报', icon: Document, match: '/management-weekly', module: 'mgmt_weekly' },
   { path: '/training', label: '培训学习', icon: Reading, match: '/training' },

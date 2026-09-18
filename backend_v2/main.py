@@ -94,6 +94,15 @@ def startup():
     except Exception:
         import logging
         logging.getLogger("main").exception("permission_migrate 启动失败")
+    # 工作流模板播种（幂等，失败不阻断启动）。
+    # 放在 init_db() 之后：新表由 create_all 建出来，播种才有地方写。
+    # 放在 permission_migrate 之后没有依赖关系，只是让权限迁移先跑完。
+    try:
+        from backend_v2.workflow_engine import seed_workflow_engine
+        seed_workflow_engine()
+    except Exception:
+        import logging
+        logging.getLogger("main").exception("工作流模板播种失败")
 
 @app.on_event("shutdown")
 def shutdown():
@@ -337,6 +346,9 @@ from backend_v2.routes.client_contacts import router as contacts_router
 from backend_v2.routes.departments import router as departments_router
 from backend_v2.routes.training import router as training_router
 from backend_v2.routes.training_tasks import router as training_tasks_router
+from backend_v2.routes.training_process import router as training_process_router
+from backend_v2.routes.project_workflow import router as project_workflow_router
+from backend_v2.routes.wf_engine import router as wf_engine_router
 
 app.include_router(auth_router)
 app.include_router(projects_router)
@@ -376,6 +388,9 @@ app.include_router(contacts_router)
 app.include_router(departments_router)
 app.include_router(training_router)
 app.include_router(training_tasks_router)
+app.include_router(training_process_router)
+app.include_router(project_workflow_router)
+app.include_router(wf_engine_router)
 
 
 # ── DingTalk Integration ──

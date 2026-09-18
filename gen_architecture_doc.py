@@ -236,7 +236,7 @@ add_table(doc,
     ['字段', '类型', '约束', '说明'],
     [
         ['id', 'SERIAL PK', '', ''],
-        ['name', 'VARCHAR(64)', 'NOT NULL', 'G1概念评审 / G2方案评审 / G3设计评审 / G4试制评审 / G5验证评审'],
+        ['name', 'VARCHAR(64)', 'NOT NULL', 'G1概念评审 / G2方案评审 / G3试制评审 / G4验证评审 / G5定型评审'],
         ['code', 'VARCHAR(8)', 'NOT NULL', 'G1-G5'],
         ['sort_order', 'INTEGER', 'NOT NULL', '1-5'],
         ['phase_id', 'INTEGER FK', 'phase.id', '关联阶段'],

@@ -9,7 +9,7 @@ def seed():
     init_db()
 
     with SessionLocal() as db:
-        # ── Phases (硬件 P0→PP5 / 软件 S0→S4, 与项目导航模块的 phase code 硬编码一致) ──
+        # ── Phases (硬件 P0→PP5 / 软件 S0→S3, 与项目导航模块的 phase code 硬编码一致) ──
         phase_defs = [
             ("概念需求阶段", "P0", 1, "需求分析、技术方案概念设计，门径G1", "hardware"),
             ("方案设计阶段", "PP1", 2, "详细方案设计、仿真分析，门径G2", "hardware"),
@@ -18,10 +18,9 @@ def seed():
             ("设计定型阶段", "PP4", 5, "设计冻结、生产移交、项目结题，门径G5", "hardware"),
             ("售后维护阶段", "PP5", 6, "量产支持、售后维护", "hardware"),
             ("需求分析阶段", "S0", 101, "需求调研、立项申请，门径G-S0", "software"),
-            ("架构设计阶段", "S1", 102, "系统架构、技术选型，门径G-S1", "software"),
-            ("开发编码阶段", "S2", 103, "模块开发、编码实现，门径G-S2", "software"),
-            ("测试验证阶段", "S3", 104, "功能测试、集成测试，门径G-S3", "software"),
-            ("发布交付阶段", "S4", 105, "发布上线、交付验收，门径G-S4", "software"),
+            ("软件开发阶段", "S1", 102, "系统架构、技术选型、模块开发、单元测试，门径G-S1", "software"),
+            ("测试验证阶段", "S2", 103, "功能测试、集成测试，门径G-S2", "software"),
+            ("发布交付阶段", "S3", 104, "发布上线、交付验收，门径G-S3", "software"),
         ]
         phase_ids = {}
         for name, code, sort, desc, ptype in phase_defs:
@@ -38,14 +37,13 @@ def seed():
         gate_defs = [
             ("G1 概念评审", "G1", 1, "P0"),
             ("G2 方案评审", "G2", 2, "PP1"),
-            ("G3 设计评审", "G3", 3, "PP2"),
-            ("G4 试制评审", "G4", 4, "PP3"),
-            ("G5 验证评审", "G5", 5, "PP4"),
+            ("G3 试制评审", "G3", 3, "PP2"),
+            ("G4 验证评审", "G4", 4, "PP3"),
+            ("G5 定型评审", "G5", 5, "PP4"),
             ("S0 需求评审", "G-S0", 101, "S0"),
-            ("S1 架构评审", "G-S1", 102, "S1"),
-            ("S2 开发完成", "G-S2", 103, "S2"),
-            ("S3 测试完成", "G-S3", 104, "S3"),
-            ("S4 发布交付", "G-S4", 105, "S4"),
+            ("S1 开发完成", "G-S1", 102, "S1"),
+            ("S2 测试完成", "G-S2", 103, "S2"),
+            ("S3 发布交付", "G-S3", 104, "S3"),
         ]
         for name, code, sort, phase_code in gate_defs:
             existing = (db.execute(select(Gate).where(Gate.code == code))).scalar_one_or_none()
@@ -54,13 +52,14 @@ def seed():
         db.flush()
 
         # ── Technical Lines ──
+        # 算法并入「控制软件」,不再单列——周报按技术线全量铺行,
+        # 多一条就会在每份周报里多出一行空白的「控制算法」。
         lines = [
-            ("控制算法", "算法", 1, "cpu"),
-            ("控制软件", "软件", 2, "monitor"),
-            ("控制硬件", "硬件", 3, "cpu"),
-            ("电机结构", "结构", 4, "setting"),
-            ("电机电磁", "电磁", 5, "magnet"),
-            ("测试验证", "测试", 6, "checked"),
+            ("控制软件", "软件", 1, "monitor"),
+            ("控制硬件", "硬件", 2, "cpu"),
+            ("电机结构", "结构", 3, "setting"),
+            ("电机电磁", "电磁", 4, "magnet"),
+            ("测试验证", "测试", 5, "checked"),
         ]
         for name, short, sort, icon in lines:
             existing = (db.execute(select(TechnicalLine).where(TechnicalLine.name == name))).scalar_one_or_none()

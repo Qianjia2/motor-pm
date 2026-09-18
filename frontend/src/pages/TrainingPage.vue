@@ -3,11 +3,16 @@
     <div class="page-header">
       <div>
         <h2>培训学习</h2>
-        <p class="subtitle">教学资料 · 任务清单</p>
+        <p class="subtitle">项目管理流程 · 教学资料 · 任务清单</p>
       </div>
     </div>
 
     <el-tabs v-model="activeSub" class="sub-tabs">
+      <!-- ─── 项目管理流程 ─── -->
+      <el-tab-pane label="🔄 项目管理流程" name="process">
+        <TrainingProcessView />
+      </el-tab-pane>
+
       <!-- ─── 教学资料 ─── -->
       <el-tab-pane label="📚 教学资料" name="materials">
         <div class="materials-head">
@@ -111,9 +116,10 @@ import { VideoCamera, Document, Download, Upload } from '@element-plus/icons-vue
 import { useAuthStore } from '../stores/auth'
 import api from '../api'
 import TrainingTasksView from '../components/training/TrainingTasksView.vue'
+import TrainingProcessView from '../components/training/TrainingProcessView.vue'
 
 const auth = useAuthStore()
-const activeSub = ref('materials')
+const activeSub = ref('process')
 
 const categories = ref([])
 const materials = ref([])

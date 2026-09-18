@@ -62,7 +62,7 @@ def list_standards(
     db: Session = Depends(get_db),
     _user=Depends(get_current_user),
 ):
-    q = select(GateDeliverableStandard)
+    q = select(GateDeliverableStandard).where(GateDeliverableStandard.is_active == True)
     if phase_id:
         q = q.where(GateDeliverableStandard.phase_id == phase_id)
     if project_type:
@@ -119,8 +119,13 @@ def delete_standard(
     s = db.get(GateDeliverableStandard, std_id)
     if not s:
         raise HTTPException(status_code=404, detail="标准不存在")
-    db.delete(s); db.commit()
-    log_audit(db, _user.username, "delete", "gate_deliverable_standard", std_id, s.name, None, "删除交付物标准")
+    # 软删而不是硬删:每次启动 init_db() 都会跑播种(_seed_*_standards),
+    # 它按 (phase_id, name)「查不到就插」,硬删掉的行会被当成"从没存在过"原样插回来。
+    # 留着行置 is_active=0,查重才命中并跳过。已停用的再删直接返回,不重复写审计。
+    if s.is_active:
+        s.is_active = False
+        db.commit()
+        log_audit(db, _user.username, "delete", "gate_deliverable_standard", std_id, s.name, None, "停用交付物标准")
     return {"ok": True}
 
 
